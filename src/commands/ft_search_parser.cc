@@ -66,6 +66,7 @@ constexpr absl::string_view kDialectParam{"DIALECT"};
 constexpr absl::string_view kLimitParam{"LIMIT"};
 constexpr absl::string_view kNoContentParam{"NOCONTENT"};
 constexpr absl::string_view kReturnParam{"RETURN"};
+constexpr absl::string_view kSortByParam{"SORTBY"};
 constexpr absl::string_view kTimeoutParam{"TIMEOUT"};
 constexpr absl::string_view kAsParam{"AS"};
 constexpr absl::string_view kLocalOnly{"LOCALONLY"};
@@ -282,7 +283,34 @@ ConstructParamsParser() {
         return absl::OkStatus();
       });
 }
-
+std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
+ConstructSortByParser() {
+  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
+      [](query::SearchParameters &parameters,
+         vmsdk::ArgsIterator &itr) -> absl::Status {
+        vmsdk::UniqueValkeyString field;
+        VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, field));
+        parameters.sortby.field = vmsdk::ToStringView(field.get());
+        parameters.sortby.enabled = true;
+        
+        // Check for optional ASC/DESC parameter
+        if (itr.DistanceEnd() > 0) {
+          auto next_arg = itr.Get();
+          if (next_arg.ok()) {
+            absl::string_view order_str = vmsdk::ToStringView(next_arg.value());
+            if (absl::EqualsIgnoreCase(order_str, "ASC")) {
+              parameters.sortby.order = query::SortOrder::kAscending;
+              itr.Next();
+            } else if (absl::EqualsIgnoreCase(order_str, "DESC")) {
+              parameters.sortby.order = query::SortOrder::kDescending;
+              itr.Next();
+            }
+            // If it's neither ASC nor DESC, leave it for the next parser
+          }
+        }
+        return absl::OkStatus();
+      });
+}
 std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
 ConstructReturnParser() {
   return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
@@ -335,6 +363,7 @@ vmsdk::KeyValueParser<query::SearchParameters> CreateSearchParser() {
       kNoContentParam,
       GENERATE_FLAG_PARSER(query::SearchParameters, no_content));
   parser.AddParamParser(kReturnParam, ConstructReturnParser());
+  parser.AddParamParser(kSortByParam, ConstructSortByParser());
   parser.AddParamParser(kParamsParam, ConstructParamsParser());
   return parser;
 }
