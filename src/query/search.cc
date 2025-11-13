@@ -7,6 +7,7 @@
 
 #include "src/query/search.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <deque>
 #include <memory>
@@ -348,6 +349,71 @@ absl::StatusOr<std::deque<indexes::Neighbor>> MaybeAddIndexedContent(
   return results;
 }
 
+absl::StatusOr<std::deque<indexes::Neighbor>> ApplySorting(
+    absl::StatusOr<std::deque<indexes::Neighbor>> results,
+    const SearchParameters &parameters) {
+  if (!results.ok() || !parameters.sortby.enabled) {
+    return results;
+  }
+
+  auto &neighbors = *results;
+  if (neighbors.empty()) {
+    return results;
+  }
+
+  // Get the index for the sort field
+  auto index_result = parameters.index_schema->GetIndex(parameters.sortby.field);
+  if (!index_result.ok()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Sort field '", parameters.sortby.field, "' is not indexed"));
+  }
+  
+  auto index = index_result.value().get();
+  
+  // Sort based on the index type
+  std::sort(neighbors.begin(), neighbors.end(), 
+    [&](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
+      bool result = false;
+      
+      switch (index->GetIndexerType()) {
+        case indexes::IndexerType::kNumeric: {
+          auto numeric_index = dynamic_cast<indexes::Numeric *>(index);
+          auto value_a = numeric_index->GetValue(a.external_id);
+          auto value_b = numeric_index->GetValue(b.external_id);
+          
+          // Handle null values (put them at the end)
+          if (!value_a && !value_b) return false;
+          if (!value_a) return false;
+          if (!value_b) return true;
+          
+          result = *value_a < *value_b;
+          break;
+        }
+        case indexes::IndexerType::kTag: {
+          auto tag_index = dynamic_cast<indexes::Tag *>(index);
+          auto value_a = tag_index->GetRawValue(a.external_id);
+          auto value_b = tag_index->GetRawValue(b.external_id);
+          
+          // Handle null values (put them at the end)
+          if (!value_a && !value_b) return false;
+          if (!value_a) return false;
+          if (!value_b) return true;
+          
+          result = *value_a < *value_b;
+          break;
+        }
+        default:
+          // For unsupported types, maintain original order
+          return false;
+      }
+      
+      // Apply sort order (ASC/DESC)
+      return parameters.sortby.order == SortOrder::kAscending ? result : !result;
+    });
+
+  return results;
+}
+
 absl::StatusOr<std::deque<indexes::Neighbor>> SearchNonVectorQuery(
     const SearchParameters &parameters) {
   std::queue<std::unique_ptr<indexes::EntriesFetcherBase>> entries_fetchers;
@@ -425,7 +491,8 @@ absl::StatusOr<std::deque<indexes::Neighbor>> DoSearch(
 
 absl::StatusOr<std::deque<indexes::Neighbor>> Search(
     const SearchParameters &parameters, SearchMode search_mode) {
-  return MaybeAddIndexedContent(DoSearch(parameters, search_mode), parameters);
+  auto results = MaybeAddIndexedContent(DoSearch(parameters, search_mode), parameters);
+  return ApplySorting(results, parameters);
 }
 
 absl::Status SearchAsync(std::unique_ptr<SearchParameters> parameters,

@@ -51,6 +51,17 @@ struct LimitParameter {
   uint64_t number{10};
 };
 
+enum class SortOrder {
+  kAscending,
+  kDescending
+};
+
+struct SortByParameter {
+  std::string field;
+  SortOrder order{SortOrder::kAscending};
+  bool enabled{false};
+};
+
 struct ReturnAttribute {
   vmsdk::UniqueValkeyString identifier;
   vmsdk::UniqueValkeyString attribute_alias;
@@ -78,6 +89,7 @@ struct SearchParameters {
   int k{0};
   std::optional<unsigned> ef;
   LimitParameter limit;
+  SortByParameter sortby;
   uint64_t timeout_ms;
   bool no_content{false};
   FilterParseResults filter_parse_results;
