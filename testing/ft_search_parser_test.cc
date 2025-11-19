@@ -69,6 +69,10 @@ struct FTSearchParserTestCase {
   std::string search_parameters_str;
   uint64_t timeout_ms{query::kTimeoutMS};
   bool vector_query{true};
+  // SORTBY test fields
+  std::string sortby_field;
+  query::SortOrder sortby_order{query::SortOrder::kAscending};
+  bool sortby_enabled{false};
 };
 
 class FTSearchParserTest
@@ -267,6 +271,12 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
       EXPECT_EQ(search_params.value()->timeout_ms, timeout_ms.value());
     } else {
       EXPECT_EQ(search_params.value()->timeout_ms, test_case.timeout_ms);
+    }
+    // Validate SORTBY parameters
+    EXPECT_EQ(search_params.value()->sortby.enabled, test_case.sortby_enabled);
+    if (test_case.sortby_enabled) {
+      EXPECT_EQ(search_params.value()->sortby.field, test_case.sortby_field);
+      EXPECT_EQ(search_params.value()->sortby.order, test_case.sortby_order);
     }
   } else {
     std::cerr << "Failed to parse command: `" << vmsdk::ToStringView(args[0])
@@ -724,6 +734,51 @@ INSTANTIATE_TEST_SUITE_P(
                 "Error parsing vector similarity parameters: `[KNN 10 @vec1 "
                 "]`. Blob attribute "
                 "argument is missing",
+        },
+        {
+            .test_name = "sortby_numeric_asc",
+            .success = true,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_1:[300 1000]",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .search_parameters_str = "SORTBY attribute_identifier_1 ASC",
+            .vector_query = false,
+            .sortby_field = "attribute_identifier_1",
+            .sortby_order = query::SortOrder::kAscending,
+            .sortby_enabled = true,
+        },
+        {
+            .test_name = "sortby_numeric_desc",
+            .success = true,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_1:[300 1000]",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .search_parameters_str = "SORTBY attribute_identifier_1 DESC",
+            .vector_query = false,
+            .sortby_field = "attribute_identifier_1",
+            .sortby_order = query::SortOrder::kDescending,
+            .sortby_enabled = true,
+        },
+        {
+            .test_name = "sortby_tag_default",
+            .success = true,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_2:{electronics}",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .search_parameters_str = "SORTBY attribute_identifier_2",
+            .vector_query = false,
+            .sortby_field = "attribute_identifier_2",
+            .sortby_order = query::SortOrder::kAscending,
+            .sortby_enabled = true,
         },
     }),
     [](const TestParamInfo<FTSearchParserTestCase> &info) {
