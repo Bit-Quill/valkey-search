@@ -369,53 +369,51 @@ absl::StatusOr<std::deque<indexes::Neighbor>> ApplySorting(
   }
 
   auto index = index_result.value().get();
-
-  // Sort based on the index type
-  std::sort(neighbors.begin(), neighbors.end(), 
-    [&](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
-      bool result = false;
-
-      switch (index->GetIndexerType()) {
-        case indexes::IndexerType::kNumeric: {
-          auto numeric_index = dynamic_cast<indexes::Numeric *>(index);
+  switch (index->GetIndexerType()) {
+    case indexes::IndexerType::kNumeric: {
+      auto numeric_index = dynamic_cast<indexes::Numeric *>(index);
+      std::stable_sort(neighbors.begin(), neighbors.end(),
+        [&](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
           auto value_a = numeric_index->GetValue(a.external_id);
           auto value_b = numeric_index->GetValue(b.external_id);
+
           // Handle null values (put them at the end)
           if (!value_a) {
-              return false;
+            return false;
+          }
+          if (!value_b) {
+            return true;
           }
 
-          if (!value_b) {
-              return true;
-          }
-          result = *value_a < *value_b;
-          break;
-        }
-        case indexes::IndexerType::kTag: {
-          auto tag_index = dynamic_cast<indexes::Tag *>(index);
+          bool result = *value_a < *value_b;
+          return parameters.sortby.order == SortOrder::kAscending ? result : !result;
+        });
+      break;
+    }
+    case indexes::IndexerType::kTag: {
+      auto tag_index = dynamic_cast<indexes::Tag *>(index);
+      std::stable_sort(neighbors.begin(), neighbors.end(),
+        [&](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
           auto value_a = tag_index->GetRawValue(a.external_id);
           auto value_b = tag_index->GetRawValue(b.external_id);
 
           // Handle null values (put them at the end)
           if (!value_a) {
-              return false;
+            return false;
           }
           if (!value_b) {
-              return true;
+            return true;
           }
 
-          result = value_a->Str() < value_b->Str();
-          break;
-        }
-        default:
-          // For unsupported types, maintain original order
-          return false;
-      }
-
-      // Apply sort order (ASC/DESC)
-      return parameters.sortby.order == SortOrder::kAscending ? result : !result;
-    });
-
+          bool result = value_a->Str() < value_b->Str();
+          return parameters.sortby.order == SortOrder::kAscending ? result : !result;
+        });
+      break;
+    }
+    default: {
+      // For unsupported types, maintain original order
+    }
+  }
   return results;
 }
 
