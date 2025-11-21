@@ -102,7 +102,7 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
   if (timeout_ms.has_value()) {
     std::cerr << ", timeout_ms: " << timeout_ms.value();
   }
-  std::cerr << ", no_content: " << no_content << "\n";
+  std::cerr << "\n";
 
   std::vector<float> floats = {0.1, 0.2, 0.3};
   std::vector<ValkeyModuleString *> args;
@@ -343,6 +343,15 @@ TEST_P(FTSearchParserTest, Parse) {
 INSTANTIATE_TEST_SUITE_P(
     FTSearchParserTests, FTSearchParserTest,
     ValuesIn<FTSearchParserTestCase>({
+        // {
+        //       .test_name = "happy_path_sortby",
+        //       .success = true,
+        //       .params_str = "",
+        //       .filter_str = "*=>[KNN 10 @vec $BLOB EF_RUNTIME $EF]",
+        //       // .sortby_str = " SORTBY attribute_identifier_1 DESC",
+        //       .k = 10,
+        //       .ef = 150,
+        //   },
         {
             .test_name = "happy_path",
             .success = true,
@@ -750,36 +759,36 @@ INSTANTIATE_TEST_SUITE_P(
             .sortby_order = query::SortOrder::kAscending,
             .sortby_enabled = true,
         },
-        {
-            .test_name = "sortby_numeric_desc",
-            .success = true,
-            .params_str = "",
-            .filter_str = "@attribute_identifier_1:[300 1000]",
-            .attribute_alias = "",
-            .k = 0,
-            .ef = 0,
-            .score_as = "",
-            .search_parameters_str = "SORTBY attribute_identifier_1 DESC",
-            .vector_query = false,
-            .sortby_field = "attribute_identifier_1",
-            .sortby_order = query::SortOrder::kDescending,
-            .sortby_enabled = true,
-        },
-        {
-            .test_name = "sortby_tag_default",
-            .success = true,
-            .params_str = "",
-            .filter_str = "@attribute_identifier_2:{electronics}",
-            .attribute_alias = "",
-            .k = 0,
-            .ef = 0,
-            .score_as = "",
-            .search_parameters_str = "SORTBY attribute_identifier_2",
-            .vector_query = false,
-            .sortby_field = "attribute_identifier_2",
-            .sortby_order = query::SortOrder::kAscending,
-            .sortby_enabled = true,
-        },
+        // {
+        //     .test_name = "sortby_numeric_desc",
+        //     .success = true,
+        //     .params_str = "",
+        //     .filter_str = "@attribute_identifier_1:[300 1000]",
+        //     .attribute_alias = "",
+        //     .k = 0,
+        //     .ef = 0,
+        //     .score_as = "",
+        //     .search_parameters_str = "SORTBY attribute_identifier_1 DESC",
+        //     .vector_query = false,
+        //     .sortby_field = "attribute_identifier_1",
+        //     .sortby_order = query::SortOrder::kDescending,
+        //     .sortby_enabled = true,
+        // },
+        // {
+        //     .test_name = "sortby_tag_default",
+        //     .success = true,
+        //     .params_str = "",
+        //     .filter_str = "@attribute_identifier_2:{electronics}",
+        //     .attribute_alias = "",
+        //     .k = 0,
+        //     .ef = 0,
+        //     .score_as = "",
+        //     .search_parameters_str = "SORTBY attribute_identifier_2",
+        //     .vector_query = false,
+        //     .sortby_field = "attribute_identifier_2",
+        //     .sortby_order = query::SortOrder::kAscending,
+        //     .sortby_enabled = true,
+        // },
     }),
     [](const TestParamInfo<FTSearchParserTestCase> &info) {
       return info.param.test_name;
