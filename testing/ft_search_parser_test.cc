@@ -70,6 +70,7 @@ struct FTSearchParserTestCase {
   uint64_t timeout_ms{query::kTimeoutMS};
   bool vector_query{true};
   // SORTBY test fields
+  std::string sortby_parameters_str;
   std::string sortby_field;
   query::SortOrder sortby_order{query::SortOrder::kAscending};
   bool sortby_enabled{false};
@@ -193,6 +194,10 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
       dialect_expected_success = kDialectOptions[dialect_itr].first;
     }
   }
+  auto sortby_parameters_vec =
+      vmsdk::ToValkeyStringVector(test_case.sortby_parameters_str);
+  args.insert(args.end(), sortby_parameters_vec.begin(),
+              sortby_parameters_vec.end());
   if (add_end_unexpected_param) {
     args.push_back(
         ValkeyModule_CreateString(nullptr, "END_UNEXPECTED_PARAM", 0));
@@ -343,15 +348,6 @@ TEST_P(FTSearchParserTest, Parse) {
 INSTANTIATE_TEST_SUITE_P(
     FTSearchParserTests, FTSearchParserTest,
     ValuesIn<FTSearchParserTestCase>({
-        // {
-        //       .test_name = "happy_path_sortby",
-        //       .success = true,
-        //       .params_str = "",
-        //       .filter_str = "*=>[KNN 10 @vec $BLOB EF_RUNTIME $EF]",
-        //       // .sortby_str = " SORTBY attribute_identifier_1 DESC",
-        //       .k = 10,
-        //       .ef = 150,
-        //   },
         {
             .test_name = "happy_path",
             .success = true,
@@ -753,42 +749,42 @@ INSTANTIATE_TEST_SUITE_P(
             .k = 0,
             .ef = 0,
             .score_as = "",
-            .search_parameters_str = "SORTBY attribute_identifier_1 ASC",
+            .sortby_parameters_str = "SORTBY attribute_identifier_1 ASC",
             .vector_query = false,
             .sortby_field = "attribute_identifier_1",
             .sortby_order = query::SortOrder::kAscending,
             .sortby_enabled = true,
         },
-        // {
-        //     .test_name = "sortby_numeric_desc",
-        //     .success = true,
-        //     .params_str = "",
-        //     .filter_str = "@attribute_identifier_1:[300 1000]",
-        //     .attribute_alias = "",
-        //     .k = 0,
-        //     .ef = 0,
-        //     .score_as = "",
-        //     .search_parameters_str = "SORTBY attribute_identifier_1 DESC",
-        //     .vector_query = false,
-        //     .sortby_field = "attribute_identifier_1",
-        //     .sortby_order = query::SortOrder::kDescending,
-        //     .sortby_enabled = true,
-        // },
-        // {
-        //     .test_name = "sortby_tag_default",
-        //     .success = true,
-        //     .params_str = "",
-        //     .filter_str = "@attribute_identifier_2:{electronics}",
-        //     .attribute_alias = "",
-        //     .k = 0,
-        //     .ef = 0,
-        //     .score_as = "",
-        //     .search_parameters_str = "SORTBY attribute_identifier_2",
-        //     .vector_query = false,
-        //     .sortby_field = "attribute_identifier_2",
-        //     .sortby_order = query::SortOrder::kAscending,
-        //     .sortby_enabled = true,
-        // },
+        {
+            .test_name = "sortby_numeric_desc",
+            .success = true,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_1:[300 1000]",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .sortby_parameters_str = "SORTBY attribute_identifier_1 DESC",
+            .vector_query = false,
+            .sortby_field = "attribute_identifier_1",
+            .sortby_order = query::SortOrder::kDescending,
+            .sortby_enabled = true,
+        },
+        {
+            .test_name = "sortby_tag_default",
+            .success = true,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_2:{electronics}",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .sortby_parameters_str = "SORTBY attribute_identifier_2",
+            .vector_query = false,
+            .sortby_field = "attribute_identifier_2",
+            .sortby_order = query::SortOrder::kAscending,
+            .sortby_enabled = true,
+        },
     }),
     [](const TestParamInfo<FTSearchParserTestCase> &info) {
       return info.param.test_name;
