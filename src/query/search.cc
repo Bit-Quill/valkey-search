@@ -362,57 +362,63 @@ absl::StatusOr<std::deque<indexes::Neighbor>> ApplySorting(
   }
 
   // Get the index for the sort field
-  auto index_result = parameters.index_schema->GetIndex(parameters.sortby.field);
-  if (!index_result.ok()) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("Sort field '", parameters.sortby.field, "' is not indexed"));
-  }
+  VMSDK_ASSIGN_OR_RETURN(auto index_result, parameters.index_schema->GetIndex(parameters.sortby.field));
 
-  auto index = index_result.value().get();
+  auto index = index_result.get();
+  auto comparisonFunction = std::function<auto (const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool>(nullptr);
   switch (index->GetIndexerType()) {
     case indexes::IndexerType::kNumeric: {
       auto numeric_index = dynamic_cast<indexes::Numeric *>(index);
-      std::stable_sort(neighbors.begin(), neighbors.end(),
-        [&](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
-          auto value_a = numeric_index->GetValue(a.external_id);
-          auto value_b = numeric_index->GetValue(b.external_id);
+      comparisonFunction = [numeric_index, &parameters](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
+        auto value_a = numeric_index->GetValue(a.external_id);
+        auto value_b = numeric_index->GetValue(b.external_id);
 
-          // Handle null values (put them at the end)
-          if (!value_a) {
-            return false;
-          }
-          if (!value_b) {
-            return true;
-          }
+        // Handle null values (put them at the end)
+        if (!value_a) {
+          return false;
+        }
+        if (!value_b) {
+          return true;
+        }
 
-          bool result = *value_a < *value_b;
-          return parameters.sortby.order == SortOrder::kAscending ? result : !result;
-        });
+        bool result = *value_a < *value_b;
+        return parameters.sortby.order == SortOrder::kAscending ? result : !result;
+      };
+
       break;
     }
     case indexes::IndexerType::kTag: {
       auto tag_index = dynamic_cast<indexes::Tag *>(index);
-      std::stable_sort(neighbors.begin(), neighbors.end(),
-        [&](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
-          auto value_a = tag_index->GetRawValue(a.external_id);
-          auto value_b = tag_index->GetRawValue(b.external_id);
+      comparisonFunction = [tag_index, &parameters](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
+        auto value_a = tag_index->GetRawValue(a.external_id);
+        auto value_b = tag_index->GetRawValue(b.external_id);
 
-          // Handle null values (put them at the end)
-          if (!value_a) {
-            return false;
-          }
-          if (!value_b) {
-            return true;
-          }
+        // Handle null values (put them at the end)
+        if (!value_a) {
+          return false;
+        }
+        if (!value_b) {
+          return true;
+        }
 
-          bool result = value_a->Str() < value_b->Str();
-          return parameters.sortby.order == SortOrder::kAscending ? result : !result;
-        });
+        bool result = value_a->Str() < value_b->Str();
+        return parameters.sortby.order == SortOrder::kAscending ? result : !result;
+      };
       break;
     }
     default: {
       // For unsupported types, maintain original order
     }
+  }
+  if (comparisonFunction != nullptr) {
+    auto limit = parameters.limit.first_index + parameters.limit.number;
+    if (limit > neighbors.size()) {
+      std::stable_sort(neighbors.begin(), neighbors.end(), comparisonFunction);
+    } else {
+      std::make_heap(neighbors.begin(), neighbors.end(), comparisonFunction);
+      neighbors.erase(neighbors.begin() + limit, neighbors.end());
+    }
+
   }
   return results;
 }
