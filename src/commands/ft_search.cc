@@ -18,10 +18,12 @@
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "src/commands/commands.h"
 #include "src/commands/ft_search_parser.h"
+#include "src/indexes/index_base.h"
 #include "src/indexes/vector_base.h"
 #include "src/metrics.h"
 #include "src/query/response_generator.h"
@@ -148,6 +150,52 @@ void SerializeNonVectorNeighbors(ValkeyModuleCtx *ctx,
 }
 
 }  // namespace
+// Apply sorting to neighbors based on attribute values in attribute_contents
+void ApplySorting(std::deque<indexes::Neighbor> &neighbors,
+                  const query::SearchParameters &parameters) {
+  if (!parameters.sortby.enabled || neighbors.empty()) {
+    return;
+  }
+
+  // Resolve sortby field to actual identifier (handle aliases)
+  auto schema_identifier = parameters.index_schema->GetIdentifier(parameters.sortby.field);
+  std::string sortby_identifier = schema_identifier.ok() ? *schema_identifier : parameters.sortby.field;
+  
+  // Check if field is a declared numeric attribute
+  auto index_result = parameters.index_schema->GetIndex(parameters.sortby.field);
+  bool is_numeric = index_result.ok() && 
+                    index_result.value()->GetIndexerType() == indexes::IndexerType::kNumeric;
+
+  auto compare = [&](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
+    if (!a.attribute_contents.has_value() || !b.attribute_contents.has_value()) {
+      return false;
+    }
+
+    auto it_a = a.attribute_contents->find(sortby_identifier);
+    auto it_b = b.attribute_contents->find(sortby_identifier);
+
+    if (it_a == a.attribute_contents->end()) return false;
+    if (it_b == b.attribute_contents->end()) return true;
+
+    auto val_a = vmsdk::ToStringView(it_a->second.value.get());
+    auto val_b = vmsdk::ToStringView(it_b->second.value.get());
+
+    bool result;
+    if (is_numeric) {
+      double num_a, num_b;
+      if (!absl::SimpleAtod(val_a, &num_a)) return false;
+      if (!absl::SimpleAtod(val_b, &num_b)) return true;
+      result = num_a < num_b;
+    } else {
+      result = val_a < val_b;
+    }
+
+    return parameters.sortby.order == query::SortOrder::kAscending ? result : !result;
+  };
+
+  std::stable_sort(neighbors.begin(), neighbors.end(), compare);
+}
+
 // The reply structure is an array which consists of:
 // 1. The amount of response elements
 // 2. Per response entry:
@@ -167,6 +215,7 @@ void SearchCommand::SendReply(ValkeyModuleCtx *ctx,
   if (IsNonVectorQuery()) {
     query::ProcessNonVectorNeighborsForReply(
         ctx, index_schema->GetAttributeDataType(), neighbors, *this);
+    ApplySorting(neighbors, *this);
     SerializeNonVectorNeighbors(ctx, neighbors, *this);
     return;
   }
@@ -189,6 +238,7 @@ void SearchCommand::SendReply(ValkeyModuleCtx *ctx,
   query::ProcessNeighborsForReply(ctx, index_schema->GetAttributeDataType(),
                                   neighbors, *this, identifier.value());
 
+  ApplySorting(neighbors, *this);
   SerializeNeighbors(ctx, neighbors, *this);
 }
 
