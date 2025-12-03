@@ -169,38 +169,51 @@ void ApplySorting(std::deque<indexes::Neighbor> &neighbors,
   bool is_numeric =
       index_result.ok() &&
       index_result.value()->GetIndexerType() == indexes::IndexerType::kNumeric;
+  auto compare = [&](const indexes::Neighbor &a,
+                     const indexes::Neighbor &b) -> bool {
+    if (!a.attribute_contents.has_value() ||
+        !b.attribute_contents.has_value()) {
+      return false;
+    }
 
-  std::stable_sort(
-      neighbors.begin(), neighbors.end(),
-      [&](const indexes::Neighbor &a, const indexes::Neighbor &b) -> bool {
-        if (!a.attribute_contents.has_value() ||
-            !b.attribute_contents.has_value()) {
-          return false;
-        }
+    auto it_a = a.attribute_contents->find(sortby_identifier);
+    auto it_b = b.attribute_contents->find(sortby_identifier);
 
-        auto it_a = a.attribute_contents->find(sortby_identifier);
-        auto it_b = b.attribute_contents->find(sortby_identifier);
+    if (it_a == a.attribute_contents->end()) {
+      return false;
+    }
+    if (it_b == b.attribute_contents->end()) {
+      return true;
+    }
 
-        if (it_a == a.attribute_contents->end()) return false;
-        if (it_b == b.attribute_contents->end()) return true;
+    auto val_a = vmsdk::ToStringView(it_a->second.value.get());
+    auto val_b = vmsdk::ToStringView(it_b->second.value.get());
 
-        auto val_a = vmsdk::ToStringView(it_a->second.value.get());
-        auto val_b = vmsdk::ToStringView(it_b->second.value.get());
+    bool result;
+    if (is_numeric) {
+      double num_a, num_b;
+      if (!absl::SimpleAtod(val_a, &num_a)) {
+        return false;
+      }
+      if (!absl::SimpleAtod(val_b, &num_b)) {
+        return true;
+      }
+      result = num_a < num_b;
+    } else {
+      result = val_a < val_b;
+    }
 
-        bool result;
-        if (is_numeric) {
-          double num_a, num_b;
-          if (!absl::SimpleAtod(val_a, &num_a)) return false;
-          if (!absl::SimpleAtod(val_b, &num_b)) return true;
-          result = num_a < num_b;
-        } else {
-          result = val_a < val_b;
-        }
+    return parameters.sortby.order == query::SortOrder::kAscending ? result
+                                                                   : !result;
+  };
 
-        return parameters.sortby.order == query::SortOrder::kAscending
-                   ? result
-                   : !result;
-      });
+  auto amountToKeep = parameters.limit.first_index + parameters.limit.number;
+  if (amountToKeep >= neighbors.size()) {
+    std::stable_sort(neighbors.begin(), neighbors.end(), compare);
+  } else {
+    std::partial_sort(neighbors.begin(), neighbors.begin() + amountToKeep,
+                      neighbors.end(), compare);
+  }
 }
 
 // The reply structure is an array which consists of:
