@@ -8,8 +8,6 @@
 #ifndef VALKEYSEARCH_SRC_COMMANDS_FT_SEARCH_PARSER_H_
 #define VALKEYSEARCH_SRC_COMMANDS_FT_SEARCH_PARSER_H_
 
-#include <cstdint>
-
 #include "src/commands/commands.h"
 #include "src/query/search.h"
 #include "vmsdk/src/valkey_module_api/valkey_module.h"
@@ -18,11 +16,6 @@ namespace valkey_search {
 namespace options {
 vmsdk::config::Number &GetMaxKnn();
 }  // namespace options
-
-struct LimitParameter {
-  uint64_t first_index{0};
-  uint64_t number{10};
-};
 
 absl::Status PreParseQueryString(query::SearchParameters &parameters);
 absl::Status PostParseQueryString(query::SearchParameters &parameters);

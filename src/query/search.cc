@@ -7,7 +7,6 @@
 
 #include "src/query/search.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <deque>
 #include <memory>
