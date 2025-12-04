@@ -117,7 +117,10 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
       OpenKey(testing::_, testing::An<ValkeyModuleString *>(), testing::_))
       .WillRepeatedly(TestValkeyModule_OpenKeyDefaultImpl);
   EXPECT_CALL(*index_schema, GetIdentifier(::testing::_))
-      .Times(::testing::AnyNumber());
+      .Times(::testing::AnyNumber())
+      .WillRepeatedly([&index_schema](absl::string_view field) {
+        return index_schema->IndexSchema::GetIdentifier(field);
+      });
   if (test_case.vector_query) {
     // Vector index setup
     data_model::VectorIndex vector_index_proto;
@@ -784,6 +787,23 @@ INSTANTIATE_TEST_SUITE_P(
             .sortby_field = "attribute_identifier_2",
             .sortby_order = query::SortOrder::kAscending,
             .sortby_enabled = true,
+        },
+        {
+            .test_name = "sortby_field_not_present",
+            .success = false,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_2:{electronics}",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .vector_query = false,
+            .sortby_parameters_str = "SORTBY nonexistent_field",
+            .sortby_field = "nonexistent_field",
+            .sortby_order = query::SortOrder::kAscending,
+            .sortby_enabled = true,
+            .expected_error_message =
+                "Index field `nonexistent_field` does not exist",
         },
     }),
     [](const TestParamInfo<FTSearchParserTestCase> &info) {
