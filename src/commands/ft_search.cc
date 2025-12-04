@@ -191,8 +191,8 @@ void ApplySorting(std::deque<indexes::Neighbor> &neighbors,
 
     expr::Value val_a, val_b;
     if (is_numeric) {
-      auto num_a = vmsdk::ToNumeric<double>(str_a).value_or(expr::Value(0.0));
-      auto num_b = vmsdk::ToNumeric<double>(str_a).value_or(expr::Value(0.0));
+      auto num_a = vmsdk::ToNumeric<double>(str_a).value_or(0.0);
+      auto num_b = vmsdk::ToNumeric<double>(str_a).value_or(0.0);
       val_a = expr::Value(num_a);
       val_b = expr::Value(num_b);
     } else {
