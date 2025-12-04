@@ -292,7 +292,7 @@ ConstructSortByParser() {
         VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, field));
         parameters.sortby.field = vmsdk::ToStringView(field.get());
         parameters.sortby.enabled = true;
-        
+
         // Check for optional ASC/DESC parameter
         if (itr.DistanceEnd() > 0) {
           auto next_arg = itr.Get();
@@ -469,22 +469,25 @@ absl::Status PostParseQueryString(query::SearchParameters &parameters) {
     VMSDK_RETURN_IF_ERROR(PostParseVectorParameters(parameters)).SetPrepend()
         << "Error parsing vector similarity parameters: ";
   }
-  
+
   // Ensure sortby field is in return_attributes if sorting is enabled
-  if (parameters.sortby.enabled && !parameters.no_content && 
+  if (parameters.sortby.enabled && !parameters.no_content &&
       !parameters.return_attributes.empty()) {
     bool found = false;
     for (const auto &attr : parameters.return_attributes) {
-      if (vmsdk::ToStringView(attr.identifier.get()) == parameters.sortby.field ||
-          (attr.attribute_alias && 
-           vmsdk::ToStringView(attr.attribute_alias.get()) == parameters.sortby.field)) {
+      if (vmsdk::ToStringView(attr.identifier.get()) ==
+              parameters.sortby.field ||
+          (attr.attribute_alias &&
+           vmsdk::ToStringView(attr.attribute_alias.get()) ==
+               parameters.sortby.field)) {
         found = true;
         break;
       }
     }
     if (!found) {
       auto identifier = vmsdk::MakeUniqueValkeyString(parameters.sortby.field);
-      auto schema_identifier = parameters.index_schema->GetIdentifier(parameters.sortby.field);
+      auto schema_identifier =
+          parameters.index_schema->GetIdentifier(parameters.sortby.field);
       vmsdk::UniqueValkeyString attribute_alias;
       if (schema_identifier.ok()) {
         attribute_alias = vmsdk::RetainUniqueValkeyString(identifier.get());
@@ -494,7 +497,7 @@ absl::Status PostParseQueryString(query::SearchParameters &parameters) {
           std::move(identifier), std::move(attribute_alias), nullptr});
     }
   }
-  
+
   return absl::OkStatus();
 }
 
