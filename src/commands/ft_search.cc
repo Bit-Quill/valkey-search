@@ -18,7 +18,6 @@
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/numbers.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "src/commands/commands.h"
@@ -28,6 +27,7 @@
 #include "src/metrics.h"
 #include "src/query/response_generator.h"
 #include "src/query/search.h"
+#include "value.h"
 #include "vmsdk/src/managed_pointers.h"
 #include "vmsdk/src/type_conversions.h"
 #include "vmsdk/src/valkey_module_api/valkey_module.h"
@@ -186,25 +186,29 @@ void ApplySorting(std::deque<indexes::Neighbor> &neighbors,
       return true;
     }
 
-    auto val_a = vmsdk::ToStringView(it_a->second.value.get());
-    auto val_b = vmsdk::ToStringView(it_b->second.value.get());
+    auto str_a = vmsdk::ToStringView(it_a->second.value.get());
+    auto str_b = vmsdk::ToStringView(it_b->second.value.get());
 
-    bool result;
+    expr::Value val_a, val_b;
     if (is_numeric) {
-      double num_a, num_b;
-      if (!absl::SimpleAtod(val_a, &num_a)) {
-        return false;
-      }
-      if (!absl::SimpleAtod(val_b, &num_b)) {
-        return true;
-      }
-      result = num_a < num_b;
+      auto num_a = vmsdk::ToNumeric<double>(str_a).value_or(expr::Value(0.0));
+      auto num_b = vmsdk::ToNumeric<double>(str_a).value_or(expr::Value(0.0));
+      val_a = expr::Value(num_a);
+      val_b = expr::Value(num_b);
     } else {
-      result = val_a < val_b;
+      val_a = expr::Value(str_a);
+      val_b = expr::Value(str_b);
     }
 
-    return parameters.sortby.order == query::SortOrder::kAscending ? result
-                                                                   : !result;
+    auto cmp = expr::Compare(val_a, val_b);
+    switch (cmp) {
+      case expr::Ordering::kEQUAL:
+      case expr::Ordering::kUNORDERED:
+      case expr::Ordering::kGREATER:
+        return parameters.sortby.order == query::SortOrder::kDescending;
+      case expr::Ordering::kLESS:
+        return parameters.sortby.order == query::SortOrder::kAscending;
+    }
   };
 
   auto amountToKeep = parameters.limit.first_index + parameters.limit.number;
