@@ -19,6 +19,7 @@ vmsdk::config::Number &GetMaxKnn();
 
 absl::Status PreParseQueryString(query::SearchParameters &parameters);
 absl::Status PostParseQueryString(query::SearchParameters &parameters);
+absl::Status VerifyQueryString(query::SearchParameters &parameters);
 
 enum class SortOrder { kAscending, kDescending };
 
