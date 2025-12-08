@@ -20,6 +20,14 @@ vmsdk::config::Number &GetMaxKnn();
 absl::Status PreParseQueryString(query::SearchParameters &parameters);
 absl::Status PostParseQueryString(query::SearchParameters &parameters);
 
+enum class SortOrder { kAscending, kDescending };
+
+struct SortByParameter {
+  std::string field;
+  SortOrder order{SortOrder::kAscending};
+  bool enabled{false};
+};
+
 //
 // Data Unique to the FT.SEARCH command
 //
@@ -27,6 +35,7 @@ struct SearchCommand : public QueryCommand {
   absl::Status ParseCommand(vmsdk::ArgsIterator &itr) override;
   void SendReply(ValkeyModuleCtx *ctx,
                  std::deque<indexes::Neighbor> &neighbors) override;
+  SortByParameter sortby;
 };
 
 }  // namespace valkey_search
