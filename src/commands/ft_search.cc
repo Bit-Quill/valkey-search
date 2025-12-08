@@ -152,7 +152,7 @@ void SerializeNonVectorNeighbors(ValkeyModuleCtx *ctx,
 }  // namespace
 // Apply sorting to neighbors based on attribute values in attribute_contents
 void ApplySorting(std::deque<indexes::Neighbor> &neighbors,
-                  const query::SearchParameters &parameters) {
+                  const SearchCommand &parameters) {
   if (!parameters.sortby.enabled || neighbors.empty()) {
     return;
   }
@@ -205,9 +205,9 @@ void ApplySorting(std::deque<indexes::Neighbor> &neighbors,
       case expr::Ordering::kEQUAL:
       case expr::Ordering::kUNORDERED:
       case expr::Ordering::kGREATER:
-        return parameters.sortby.order == query::SortOrder::kDescending;
+        return parameters.sortby.order == SortOrder::kDescending;
       case expr::Ordering::kLESS:
-        return parameters.sortby.order == query::SortOrder::kAscending;
+        return parameters.sortby.order == SortOrder::kAscending;
     }
   };
 

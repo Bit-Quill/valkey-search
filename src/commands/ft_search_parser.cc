@@ -24,6 +24,7 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "ft_create_parser.h"
+#include "ft_search_parser.h"
 #include "src/commands/filter_parser.h"
 #include "src/index_schema.h"
 #include "src/indexes/index_base.h"
@@ -241,11 +242,9 @@ absl::Status Verify(query::SearchParameters &parameters) {
   return absl::OkStatus();
 }
 
-std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
-ConstructLimitParser() {
-  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
-      [](query::SearchParameters &parameters,
-         vmsdk::ArgsIterator &itr) -> absl::Status {
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructLimitParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
         VMSDK_RETURN_IF_ERROR(
             vmsdk::ParseParamValue(itr, parameters.limit.first_index));
         VMSDK_RETURN_IF_ERROR(
@@ -254,11 +253,9 @@ ConstructLimitParser() {
       });
 }
 
-std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
-ConstructParamsParser() {
-  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
-      [](query::SearchParameters &parameters,
-         vmsdk::ArgsIterator &itr) -> absl::Status {
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructParamsParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
         unsigned count{0};
         VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, count));
         if (count & 1) {
@@ -283,11 +280,9 @@ ConstructParamsParser() {
         return absl::OkStatus();
       });
 }
-std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
-ConstructSortByParser() {
-  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
-      [](query::SearchParameters &parameters,
-         vmsdk::ArgsIterator &itr) -> absl::Status {
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructSortByParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
         vmsdk::UniqueValkeyString field;
         VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, field));
         parameters.sortby.field = vmsdk::ToStringView(field.get());
@@ -299,10 +294,10 @@ ConstructSortByParser() {
           if (next_arg.ok()) {
             absl::string_view order_str = vmsdk::ToStringView(next_arg.value());
             if (absl::EqualsIgnoreCase(order_str, "ASC")) {
-              parameters.sortby.order = query::SortOrder::kAscending;
+              parameters.sortby.order = SortOrder::kAscending;
               itr.Next();
             } else if (absl::EqualsIgnoreCase(order_str, "DESC")) {
-              parameters.sortby.order = query::SortOrder::kDescending;
+              parameters.sortby.order = SortOrder::kDescending;
               itr.Next();
             }
             // If it's neither ASC nor DESC, leave it for the next parser
@@ -311,11 +306,9 @@ ConstructSortByParser() {
         return absl::OkStatus();
       });
 }
-std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
-ConstructReturnParser() {
-  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
-      [](query::SearchParameters &parameters,
-         vmsdk::ArgsIterator &itr) -> absl::Status {
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructReturnParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
         uint32_t cnt{0};
         VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, cnt));
         if (cnt == 0) {
@@ -349,27 +342,24 @@ ConstructReturnParser() {
       });
 }
 
-vmsdk::KeyValueParser<query::SearchParameters> CreateSearchParser() {
-  vmsdk::KeyValueParser<query::SearchParameters> parser;
-  parser.AddParamParser(
-      kDialectParam, GENERATE_VALUE_PARSER(query::SearchParameters, dialect));
-  parser.AddParamParser(
-      kLocalOnly, GENERATE_FLAG_PARSER(query::SearchParameters, local_only));
-  parser.AddParamParser(
-      kTimeoutParam,
-      GENERATE_VALUE_PARSER(query::SearchParameters, timeout_ms));
+vmsdk::KeyValueParser<SearchCommand> CreateSearchParser() {
+  vmsdk::KeyValueParser<SearchCommand> parser;
+  parser.AddParamParser(kDialectParam,
+                        GENERATE_VALUE_PARSER(SearchCommand, dialect));
+  parser.AddParamParser(kLocalOnly,
+                        GENERATE_FLAG_PARSER(SearchCommand, local_only));
+  parser.AddParamParser(kTimeoutParam,
+                        GENERATE_VALUE_PARSER(SearchCommand, timeout_ms));
   parser.AddParamParser(kLimitParam, ConstructLimitParser());
-  parser.AddParamParser(
-      kNoContentParam,
-      GENERATE_FLAG_PARSER(query::SearchParameters, no_content));
+  parser.AddParamParser(kNoContentParam,
+                        GENERATE_FLAG_PARSER(SearchCommand, no_content));
   parser.AddParamParser(kReturnParam, ConstructReturnParser());
   parser.AddParamParser(kSortByParam, ConstructSortByParser());
   parser.AddParamParser(kParamsParam, ConstructParamsParser());
   return parser;
 }
 
-static vmsdk::KeyValueParser<query::SearchParameters> SearchParser =
-    CreateSearchParser();
+static vmsdk::KeyValueParser<SearchCommand> SearchParser = CreateSearchParser();
 
 }  // namespace
 
@@ -470,29 +460,30 @@ absl::Status PostParseQueryString(query::SearchParameters &parameters) {
         << "Error parsing vector similarity parameters: ";
   }
 
-  // Validate sortby field exists in the index schema
-  if (parameters.sortby.enabled) {
+  if (auto searchCommand = dynamic_cast<SearchCommand *>(&parameters);
+      searchCommand && searchCommand->sortby.enabled) {
+    // Validate sortby field exists in the index schema
     VMSDK_RETURN_IF_ERROR(
-        parameters.index_schema->GetIdentifier(parameters.sortby.field)
+        parameters.index_schema->GetIdentifier(searchCommand->sortby.field)
             .status());
     // Ensure sortby field is in return_attributes if sorting is enabled
     if (!parameters.no_content && !parameters.return_attributes.empty()) {
       bool found = false;
       for (const auto &attr : parameters.return_attributes) {
         if (vmsdk::ToStringView(attr.identifier.get()) ==
-                parameters.sortby.field ||
+                searchCommand->sortby.field ||
             (attr.attribute_alias &&
              vmsdk::ToStringView(attr.attribute_alias.get()) ==
-                 parameters.sortby.field)) {
+                 searchCommand->sortby.field)) {
           found = true;
           break;
         }
       }
       if (!found) {
         auto identifier =
-            vmsdk::MakeUniqueValkeyString(parameters.sortby.field);
+            vmsdk::MakeUniqueValkeyString(searchCommand->sortby.field);
         auto schema_identifier =
-            parameters.index_schema->GetIdentifier(parameters.sortby.field);
+            parameters.index_schema->GetIdentifier(searchCommand->sortby.field);
         vmsdk::UniqueValkeyString attribute_alias;
         if (schema_identifier.ok()) {
           attribute_alias = vmsdk::RetainUniqueValkeyString(identifier.get());
