@@ -11,8 +11,6 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/random/random.h"
-#include "absl/status/status.h"
-#include "absl/strings/str_cat.h"
 #include "vmsdk/src/log.h"
 #include "vmsdk/src/managed_pointers.h"
 #include "vmsdk/src/module_config.h"
@@ -21,7 +19,7 @@
 namespace vmsdk {
 namespace cluster_map {
 
-const std::string VALKEY_MODULE_CALL_ERROR_MSG =
+const std::string kValkeyModuleCallErrorMsg =
     "ValkeyModule_Call returned invalid result";
 
 // configurable variable for cluster map expiration time
@@ -57,9 +55,42 @@ const ShardInfo* ClusterMap::GetShardBySlot(uint16_t slot) const {
   return nullptr;
 }
 
-const NodeInfo& ClusterMap::GetRandomNodeFromShard(
-    const ShardInfo& shard) const {
+std::optional<NodeInfo> ClusterMap::GetLocalNodeFromShard(
+    const ShardInfo& shard, bool replica_only) const {
+  // Try to find a local node first
+  if (!replica_only && shard.primary.has_value() && shard.primary->is_local) {
+    return shard.primary.value();
+  }
+
+  // Look for local replicas
+  for (const auto& replica : shard.replicas) {
+    if (replica.is_local) {
+      return replica;
+    }
+  }
+
+  // Return null if no local nodes found
+  return std::nullopt;
+}
+
+NodeInfo ClusterMap::GetRandomNodeFromShard(const ShardInfo& shard,
+                                            bool replica_only,
+                                            bool prefer_local) const {
+  if (prefer_local) {
+    auto local_node = GetLocalNodeFromShard(shard, replica_only);
+    if (local_node.has_value()) {
+      return local_node.value();
+    }
+    // Fall through to random selection if no local node found
+  }
+
   absl::BitGen gen;
+
+  if (replica_only) {
+    size_t replica_index = absl::Uniform(gen, 0u, shard.replicas.size());
+    return shard.replicas[replica_index];
+  }
+
   size_t node_count = shard.replicas.size();
   if (shard.primary.has_value()) {
     node_count++;
@@ -73,13 +104,39 @@ const NodeInfo& ClusterMap::GetRandomNodeFromShard(
   return shard.replicas[replica_index];
 }
 
-std::vector<NodeInfo> ClusterMap::GetRandomTargets() const {
-  std::vector<NodeInfo> random_targets;
-  random_targets.reserve(shards_.size());
-  for (const auto& [shard_id, shard_info] : shards_) {
-    random_targets.push_back(GetRandomNodeFromShard(shard_info));
+std::vector<NodeInfo> ClusterMap::GetTargets(FanoutTargetMode mode,
+                                             bool prefer_local) const {
+  switch (mode) {
+    case FanoutTargetMode::kAll:
+      return all_targets_;
+    case FanoutTargetMode::kPrimary:
+      return primary_targets_;
+    case FanoutTargetMode::kReplicas:
+      return replica_targets_;
+    case FanoutTargetMode::kOneReplicaPerShard: {
+      std::vector<NodeInfo> random_replicas;
+      random_replicas.reserve(shards_.size());
+      for (const auto& [shard_id, shard_info] : shards_) {
+        if (shard_info.replicas.empty()) {
+          continue;
+        }
+        random_replicas.push_back(
+            GetRandomNodeFromShard(shard_info, true, prefer_local));
+      }
+      return random_replicas;
+    }
+    case FanoutTargetMode::kRandom: {
+      std::vector<NodeInfo> random_targets;
+      random_targets.reserve(shards_.size());
+      for (const auto& [shard_id, shard_info] : shards_) {
+        random_targets.push_back(
+            GetRandomNodeFromShard(shard_info, false, prefer_local));
+      }
+      return random_targets;
+    }
+    default:
+      CHECK(false);
   }
-  return random_targets;
 }
 
 // For shard fingerprint - hash the slot ranges
@@ -114,11 +171,11 @@ uint64_t ClusterMap::ComputeClusterFingerprint() {
 
 // Helper function to parse node info from CLUSTER SLOTS reply
 std::optional<NodeInfo> ClusterMap::ParseNodeInfo(
-    ValkeyModuleCallReply* node_arr, bool is_local_shard, bool is_primary) {
-  CHECK(node_arr) << VALKEY_MODULE_CALL_ERROR_MSG;
+    ValkeyModuleCallReply* node_arr, const char* my_node_id, bool is_primary) {
+  CHECK(node_arr) << kValkeyModuleCallErrorMsg;
   // each node array should have exactly 4 elements
   CHECK(ValkeyModule_CallReplyLength(node_arr) == 4)
-      << VALKEY_MODULE_CALL_ERROR_MSG;
+      << kValkeyModuleCallErrorMsg;
 
   // Get primary endpoint
   ValkeyModuleCallReply* primary_endpoint_reply =
@@ -143,20 +200,24 @@ std::optional<NodeInfo> ClusterMap::ParseNodeInfo(
   // Get port
   long long node_port = ValkeyModule_CallReplyInteger(
       ValkeyModule_CallReplyArrayElement(node_arr, 1));
-  CHECK(node_port) << VALKEY_MODULE_CALL_ERROR_MSG;
+  CHECK(node_port) << kValkeyModuleCallErrorMsg;
 
   // Get node ID
   size_t node_id_len;
   const char* node_id_char = ValkeyModule_CallReplyStringPtr(
       ValkeyModule_CallReplyArrayElement(node_arr, 2), &node_id_len);
-  CHECK(node_id_char) << VALKEY_MODULE_CALL_ERROR_MSG;
+  CHECK(node_id_char) << kValkeyModuleCallErrorMsg;
+
+  bool is_local_node =
+      (node_id_len == VALKEYMODULE_NODE_ID_LEN &&
+       memcmp(node_id_char, my_node_id, VALKEYMODULE_NODE_ID_LEN) == 0);
 
   // Get additional network metadata
   // Depending on the client RESP protocol version, the additional network
   // metadata might be a map(RESP3), or a flattened array(RESP2)
   absl::flat_hash_map<std::string, std::string> additional_network_metadata;
   auto reply_metadata = ValkeyModule_CallReplyArrayElement(node_arr, 3);
-  CHECK(reply_metadata) << VALKEY_MODULE_CALL_ERROR_MSG;
+  CHECK(reply_metadata) << kValkeyModuleCallErrorMsg;
 
   auto insert_metadata = [&additional_network_metadata](
                              ValkeyModuleCallReply* key_reply,
@@ -194,7 +255,7 @@ std::optional<NodeInfo> ClusterMap::ParseNodeInfo(
     }
     default:
       // crash if the reply is not map or array type
-      CHECK(false) << VALKEY_MODULE_CALL_ERROR_MSG;
+      CHECK(false) << kValkeyModuleCallErrorMsg;
   }
 
   std::string node_id_str = std::string(node_id_char, node_id_len);
@@ -219,7 +280,7 @@ std::optional<NodeInfo> ClusterMap::ParseNodeInfo(
 
   return NodeInfo{.node_id = node_id_str,
                   .is_primary = is_primary,
-                  .is_local = is_local_shard,
+                  .is_local = is_local_node,
                   .socket_address = addr,
                   .additional_network_metadata = additional_network_metadata,
                   .shard = nullptr};
@@ -284,11 +345,11 @@ bool ClusterMap::IsExistingShardConsistent(
 bool ClusterMap::ProcessSlotRange(ValkeyModuleCallReply* slot_range,
                                   const char* my_node_id,
                                   std::vector<SlotRangeInfo>& slot_ranges) {
-  CHECK(slot_range) << VALKEY_MODULE_CALL_ERROR_MSG;
+  CHECK(slot_range) << kValkeyModuleCallErrorMsg;
   CHECK(ValkeyModule_CallReplyType(slot_range) == VALKEYMODULE_REPLY_ARRAY)
-      << VALKEY_MODULE_CALL_ERROR_MSG;
+      << kValkeyModuleCallErrorMsg;
   CHECK(ValkeyModule_CallReplyLength(slot_range) >= 3)
-      << VALKEY_MODULE_CALL_ERROR_MSG;
+      << kValkeyModuleCallErrorMsg;
 
   // Parse start and end slots
   long long start = ValkeyModule_CallReplyInteger(
@@ -302,7 +363,7 @@ bool ClusterMap::ProcessSlotRange(ValkeyModuleCallReply* slot_range,
   // Parse primary node
   ValkeyModuleCallReply* primary_node_arr =
       ValkeyModule_CallReplyArrayElement(slot_range, 2);
-  auto primary_node_opt = ParseNodeInfo(primary_node_arr, is_local_shard, true);
+  auto primary_node_opt = ParseNodeInfo(primary_node_arr, my_node_id, true);
   if (!primary_node_opt.has_value()) {
     VMSDK_LOG(WARNING, nullptr) << "Dropping slot range [" << start << "-"
                                 << end << "] due to invalid primary node";
@@ -317,7 +378,7 @@ bool ClusterMap::ProcessSlotRange(ValkeyModuleCallReply* slot_range,
   for (size_t j = 3; j < slot_len; j++) {
     ValkeyModuleCallReply* replica_node_arr =
         ValkeyModule_CallReplyArrayElement(slot_range, j);
-    auto replica_opt = ParseNodeInfo(replica_node_arr, is_local_shard, false);
+    auto replica_opt = ParseNodeInfo(replica_node_arr, my_node_id, false);
     if (!replica_opt.has_value()) {
       VMSDK_LOG(WARNING, nullptr) << "Skipping invalid replica in slot range ["
                                   << start << "-" << end << "]";
@@ -330,7 +391,7 @@ bool ClusterMap::ProcessSlotRange(ValkeyModuleCallReply* slot_range,
   // Mark owned slots if local
   if (is_local_shard) {
     for (long long slot = start; slot <= end; slot++) {
-      CHECK(slot >= 0 && slot < k_num_slots) << "Invalid slot number";
+      CHECK(slot >= 0 && slot < kNumSlots) << "Invalid slot number";
       owned_slots_[slot] = true;
     }
   }
@@ -409,7 +470,7 @@ bool ClusterMap::CheckClusterMapFull() {
         << " entries";
     return false;
   }
-  return expected_next == k_num_slots;
+  return expected_next == kNumSlots;
 }
 
 std::shared_ptr<ClusterMap> ClusterMap::CreateNewClusterMap(
@@ -420,13 +481,13 @@ std::shared_ptr<ClusterMap> ClusterMap::CreateNewClusterMap(
   // Call CLUSTER SLOTS
   auto reply = vmsdk::UniquePtrValkeyCallReply(
       ValkeyModule_Call(ctx, "CLUSTER", "c", "SLOTS"));
-  CHECK(reply) << VALKEY_MODULE_CALL_ERROR_MSG;
+  CHECK(reply) << kValkeyModuleCallErrorMsg;
   CHECK(ValkeyModule_CallReplyType(reply.get()) == VALKEYMODULE_REPLY_ARRAY)
-      << VALKEY_MODULE_CALL_ERROR_MSG;
+      << kValkeyModuleCallErrorMsg;
 
   // Get local node ID
   const char* my_node_id = ValkeyModule_GetMyClusterID();
-  CHECK(my_node_id) << VALKEY_MODULE_CALL_ERROR_MSG;
+  CHECK(my_node_id) << kValkeyModuleCallErrorMsg;
 
   // Process each slot range
   std::vector<SlotRangeInfo> slot_ranges;
@@ -451,6 +512,25 @@ std::shared_ptr<ClusterMap> ClusterMap::CreateNewClusterMap(
     // Fix replica pointers
     for (auto& replica : shard.replicas) {
       replica.shard = &shard;
+    }
+  }
+
+  // Cache reference to current node's shard for quick access
+  for (const auto& [shard_id, shard_info] : new_map->shards_) {
+    // Check if primary is local
+    if (shard_info.primary.has_value() && shard_info.primary->is_local) {
+      new_map->current_node_shard_ = &shard_info;
+      break;
+    }
+    // Check if any replica is local
+    for (const auto& replica : shard_info.replicas) {
+      if (replica.is_local) {
+        new_map->current_node_shard_ = &shard_info;
+        break;
+      }
+    }
+    if (new_map->current_node_shard_ != nullptr) {
+      break;
     }
   }
 

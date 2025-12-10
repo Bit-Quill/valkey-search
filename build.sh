@@ -10,13 +10,13 @@ FORMAT="no"
 RUN_TEST=""
 RUN_BUILD="yes"
 DUMP_TEST_ERRORS_STDOUT="no"
-NINJA_TOOL="ninja"
 INTEGRATION_TEST="no"
 SAN_BUILD="no"
 ARGV=$@
 EXIT_CODE=0
 INTEG_RETRIES=1
 JOBS=""
+CMAKE_GENERATOR=${CMAKE_GENERATOR:-"Ninja"}
 
 echo "Root directory: ${ROOT_DIR}"
 
@@ -166,13 +166,14 @@ export ROOT_DIR
 
 function configure() {
     printf "${BOLD_PINK}Running cmake...${RESET}\n"
-    mkdir -p "${BUILD_DIR}"
-    cd "${BUILD_DIR}"
+    printf "Generating ${GREEN}${CMAKE_GENERATOR}${RESET} build files\n"
+    mkdir -p ${BUILD_DIR}
+    cd $_
     local BUILD_TYPE=$(capitalize_string ${BUILD_CONFIG})
     rm -f CMakeCache.txt
-    printf "Running: cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -Wno-dev -GNinja ${CMAKE_EXTRA_ARGS}\n"
-    cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -Wno-dev -GNinja ${CMAKE_EXTRA_ARGS}
-    cd "${ROOT_DIR}"
+    printf "Running: cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -Wno-dev -G"${CMAKE_GENERATOR}" ${CMAKE_EXTRA_ARGS}\n"
+    cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTS=ON -Wno-dev -G"${CMAKE_GENERATOR}" ${CMAKE_EXTRA_ARGS}
+    cd ${ROOT_DIR}
 }
 
 function build() {
@@ -180,9 +181,9 @@ function build() {
     if [ -d "${BUILD_DIR}" ]; then
         cd "${BUILD_DIR}"
         if [ -z "${JOBS}" ]; then
-            ${NINJA_TOOL} ${VERBOSE_ARGS} ${CMAKE_TARGET}
+            ${BUILD_TOOL} ${VERBOSE_ARGS} ${CMAKE_TARGET}
         else
-            ${NINJA_TOOL} -j ${JOBS} ${VERBOSE_ARGS} ${CMAKE_TARGET}
+            ${BUILD_TOOL} -j ${JOBS} ${VERBOSE_ARGS} ${CMAKE_TARGET}
         fi
         cd "${ROOT_DIR}"
 
@@ -247,44 +248,56 @@ function check_tool() {
     printf "${GREEN}ok${RESET}\n"
 }
 
+function determine_ninja() {
+    local os_name=$(uname -s)
+    if [[ "${os_name}" == "Darwin" ]]; then
+        # ninja is can be installed via "brew"
+        echo "ninja"
+    else
+        # Check for ninja. On RedHat based Linux, it is called ninja-build, while on Debian based Linux, it is simply ninja
+        # Ubuntu / Mint et al will report "ID_LIKE=debian"
+        local debian_output=$(cat /etc/*-release | grep -i debian | wc -l)
+        if [ ${debian_output} -gt 0 ]; then
+            echo "ninja"
+        else
+            echo "ninja-build"
+        fi
+    fi
+}
+
 function check_tools() {
     local tools="cmake g++ gcc"
     for tool in $tools; do
         check_tool ${tool}
     done
 
-    os_name=$(uname -s)
-    if [[ "${os_name}" == "Darwin" ]]; then
-        # ninja is can be installed via "brew"
-        NINJA_TOOL="ninja"
-    else
-        # Check for ninja. On RedHat based Linux, it is called ninja-build, while on Debian based Linux, it is simply ninja
-        # Ubuntu / Mint et al will report "ID_LIKE=debian"
-        local debian_output=$(cat /etc/*-release | grep -i debian | wc -l)
-        if [ ${debian_output} -gt 0 ]; then
-            NINJA_TOOL="ninja"
-        else
-            NINJA_TOOL="ninja-build"
-        fi
+    local build_tool=$(determine_ninja)
+    if [[ "${BUILD_TOOL}" =~ make ]]; then
+        build_tool="make"
     fi
-    check_tool ${NINJA_TOOL}
+    check_tool ${build_tool}
 }
 
 # If any of the CMake files is newer than our "build.ninja" file, force "cmake" before building
 function is_configure_required() {
-    local ninja_build_file=${BUILD_DIR}/build.ninja
+    if [[ "${BUILD_TOOL}" =~ ninja ]]; then
+      local top_level_build_file=${BUILD_DIR}/build.ninja
+    else
+      local top_level_build_file=${BUILD_DIR}/Makefile
+    fi
+
     if [[ "${RUN_CMAKE}" == "yes" ]]; then
         # User asked for configure
         echo "yes"
         return
     fi
 
-    if [ ! -f "${ninja_build_file}" ] || [ ! -f "${BUILD_DIR}/CMakeCache.txt" ]; then
-        # No ninja build file
+    if [ ! -f "${top_level_build_file}" ] || [ ! -f "${BUILD_DIR}/CMakeCache.txt" ]; then
         echo "yes"
         return
     fi
-    local build_file_lastmodified=$(get_file_last_modified "${ninja_build_file}")
+
+    local build_file_lastmodified=$(get_file_last_modified "${top_level_build_file}")
     local IFS=$'\n'
     local cmake_files=$(find "${ROOT_DIR}" -name "CMakeLists.txt" -o -name "*.cmake" | grep -v ".build-release" | grep -v ".build-debug")
     for cmake_file in $cmake_files; do
@@ -300,6 +313,14 @@ function is_configure_required() {
 cleanup() {
     cd "${ROOT_DIR}"
 }
+
+if [[ "${CMAKE_GENERATOR}" == "Ninja" ]]; then
+  # Using Ninja (the default)
+  BUILD_TOOL=$(determine_ninja)
+else
+  # Using Makefile
+  BUILD_TOOL="make -j$(num_proc)"
+fi
 
 # Ensure cleanup runs on exit
 trap cleanup EXIT
@@ -324,6 +345,7 @@ TESTS_DIR=${BUILD_DIR}/tests
 TEST_OUTPUT_FILE=${BUILD_DIR}/tests.out
 
 printf "Checking if configure is required..."
+
 FORCE_CMAKE=$(is_configure_required)
 printf "${GREEN}${FORCE_CMAKE}${RESET}\n"
 check_tools

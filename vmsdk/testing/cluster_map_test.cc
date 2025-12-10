@@ -149,32 +149,28 @@ class ClusterMapTest : public vmsdk::ValkeyTest {
 
     EXPECT_CALL(*kMockValkeyModule,
                 CallReplyArrayElement(testing::_, testing::_))
-        .WillRepeatedly(
-            testing::Invoke(&TestValkeyModule_CallReplyArrayElementImpl));
+        .WillRepeatedly(&TestValkeyModule_CallReplyArrayElementImpl);
 
     EXPECT_CALL(*kMockValkeyModule, CallReplyType(testing::Ne(reply)))
-        .WillRepeatedly(testing::Invoke(&TestValkeyModule_CallReplyTypeImpl));
+        .WillRepeatedly(&TestValkeyModule_CallReplyTypeImpl);
 
     EXPECT_CALL(*kMockValkeyModule, CallReplyLength(testing::Ne(reply)))
-        .WillRepeatedly(testing::Invoke([](ValkeyModuleCallReply* r) -> size_t {
+        .WillRepeatedly([](ValkeyModuleCallReply* r) -> size_t {
           if (r && r->type == VALKEYMODULE_REPLY_ARRAY) {
             return std::get<CallReplyArray>(r->val).size();
           }
           return 0;
-        }));
+        });
 
     EXPECT_CALL(*kMockValkeyModule, CallReplyInteger(testing::_))
-        .WillRepeatedly(
-            testing::Invoke(&TestValkeyModule_CallReplyIntegerImpl));
+        .WillRepeatedly(&TestValkeyModule_CallReplyIntegerImpl);
 
     EXPECT_CALL(*kMockValkeyModule, CallReplyStringPtr(testing::_, testing::_))
-        .WillRepeatedly(
-            testing::Invoke(&TestValkeyModule_CallReplyStringPtrImpl));
+        .WillRepeatedly(&TestValkeyModule_CallReplyStringPtrImpl);
 
     EXPECT_CALL(*kMockValkeyModule, CallReplyMapElement(testing::_, testing::_,
                                                         testing::_, testing::_))
-        .WillRepeatedly(
-            testing::Invoke(&TestValkeyModule_CallReplyMapElementImpl));
+        .WillRepeatedly(&TestValkeyModule_CallReplyMapElementImpl);
   }
 
   // Helper: Mock CLUSTER SLOTS command
@@ -331,9 +327,11 @@ class ClusterMapTest : public vmsdk::ValkeyTest {
   void VerifyTargetListConsistency(const ClusterMap* cluster_map,
                                    size_t expected_primaries,
                                    size_t expected_replicas) {
-    const auto& primary_targets = cluster_map->GetPrimaryTargets();
-    const auto& replica_targets = cluster_map->GetReplicaTargets();
-    const auto& all_targets = cluster_map->GetAllTargets();
+    const auto& primary_targets =
+        cluster_map->GetTargets(FanoutTargetMode::kPrimary);
+    const auto& replica_targets =
+        cluster_map->GetTargets(FanoutTargetMode::kReplicas);
+    const auto& all_targets = cluster_map->GetTargets(FanoutTargetMode::kAll);
 
     EXPECT_EQ(primary_targets.size(), expected_primaries);
     EXPECT_EQ(replica_targets.size(), expected_replicas);
@@ -444,7 +442,9 @@ TEST_F(ClusterMapTest, AdditionalNetworkMetadata) {
   ASSERT_NE(cluster_map, nullptr);
   EXPECT_TRUE(cluster_map->IsConsistent());
   auto additional_network_metadata =
-      cluster_map->GetPrimaryTargets().at(0).additional_network_metadata;
+      cluster_map->GetTargets(FanoutTargetMode::kPrimary)
+          .at(0)
+          .additional_network_metadata;
   auto it = additional_network_metadata.find("hostname");
   EXPECT_TRUE(it != additional_network_metadata.end());
   EXPECT_EQ(it->second, "test.valkey.io");
@@ -466,7 +466,9 @@ TEST_F(ClusterMapTest, AdditionalNetworkMetadataWithMap) {
   ASSERT_NE(cluster_map, nullptr);
   EXPECT_TRUE(cluster_map->IsConsistent());
   auto additional_network_metadata =
-      cluster_map->GetPrimaryTargets().at(0).additional_network_metadata;
+      cluster_map->GetTargets(FanoutTargetMode::kPrimary)
+          .at(0)
+          .additional_network_metadata;
   auto it = additional_network_metadata.find("hostname");
   EXPECT_TRUE(it != additional_network_metadata.end());
   EXPECT_EQ(it->second, "test.valkey.io");
@@ -626,9 +628,9 @@ TEST_F(ClusterMapTest, DiscreteSlotRangeTest) {
   EXPECT_TRUE(cluster_map->IOwnSlot(10923));
   EXPECT_TRUE(cluster_map->IOwnSlot(16383));
 
-  EXPECT_EQ(cluster_map->GetPrimaryTargets().size(), 2);
-  EXPECT_EQ(cluster_map->GetReplicaTargets().size(), 2);
-  EXPECT_EQ(cluster_map->GetAllTargets().size(), 4);
+  EXPECT_EQ(cluster_map->GetTargets(FanoutTargetMode::kPrimary).size(), 2);
+  EXPECT_EQ(cluster_map->GetTargets(FanoutTargetMode::kReplicas).size(), 2);
+  EXPECT_EQ(cluster_map->GetTargets(FanoutTargetMode::kAll).size(), 4);
 }
 
 TEST_F(ClusterMapTest, InvalidPrimaryEndpoint) {
@@ -652,9 +654,9 @@ TEST_F(ClusterMapTest, InvalidPrimaryEndpoint) {
   ASSERT_FALSE(cluster_map->IsConsistent());
   ASSERT_TRUE(cluster_map->IOwnSlot(0));
   ASSERT_FALSE(cluster_map->IOwnSlot(10000));
-  EXPECT_EQ(cluster_map->GetPrimaryTargets().size(), 1);
-  EXPECT_EQ(cluster_map->GetReplicaTargets().size(), 1);
-  EXPECT_EQ(cluster_map->GetAllTargets().size(), 2);
+  EXPECT_EQ(cluster_map->GetTargets(FanoutTargetMode::kPrimary).size(), 1);
+  EXPECT_EQ(cluster_map->GetTargets(FanoutTargetMode::kReplicas).size(), 1);
+  EXPECT_EQ(cluster_map->GetTargets(FanoutTargetMode::kAll).size(), 2);
 }
 
 // ============================================================================
@@ -684,10 +686,10 @@ TEST_F(ClusterMapTest, LocalNodeIsReplicaTest) {
   EXPECT_FALSE(cluster_map->IOwnSlot(8192));
   EXPECT_FALSE(cluster_map->IOwnSlot(16383));
 
-  // Verify both nodes in first shard are marked as local
+  // Verify only the first replica is local
   const ShardInfo* shard = cluster_map->GetShardById(primary_ids.at(0));
   ASSERT_NE(shard, nullptr);
-  EXPECT_TRUE(shard->primary->is_local);
+  EXPECT_FALSE(shard->primary->is_local);
   EXPECT_TRUE(shard->replicas[0].is_local);
 
   // Second shard should be remote
@@ -733,7 +735,7 @@ TEST_F(ClusterMapTest, GetRandomTargetsTest) {
 
   ASSERT_NE(cluster_map, nullptr);
 
-  auto random_targets = cluster_map->GetRandomTargets();
+  auto random_targets = cluster_map->GetTargets(FanoutTargetMode::kRandom);
   EXPECT_EQ(random_targets.size(), 3);  // One per shard
 
   // Verify each target belongs to a different shard
@@ -760,6 +762,26 @@ TEST_F(ClusterMapTest, TargetListConsistencyTest) {
 
   ASSERT_NE(cluster_map, nullptr);
   VerifyTargetListConsistency(cluster_map.get(), 2, 2);
+}
+
+TEST_F(ClusterMapTest, GetRandomReplicaPerShardTest) {
+  auto ranges = CreateStandard3ShardConfig();
+  auto cluster_map = CreateClusterMapWithConfig(ranges, primary_ids.at(0));
+
+  ASSERT_NE(cluster_map, nullptr);
+
+  auto random_targets =
+      cluster_map->GetTargets(FanoutTargetMode::kOneReplicaPerShard);
+  EXPECT_EQ(random_targets.size(), 3);  // One per shard
+
+  // Verify each target belongs to a different shard
+  std::set<std::string> shard_ids;
+  for (const auto& target : random_targets) {
+    ASSERT_NE(target.shard, nullptr);
+    ASSERT_FALSE(target.is_primary);
+    shard_ids.insert(target.shard->shard_id);
+  }
+  EXPECT_EQ(shard_ids.size(), 3);
 }
 
 // ============================================================================
@@ -820,6 +842,185 @@ TEST_F(ClusterMapTest, ExpirationTimeTest) {
   auto max_expiration = after + std::chrono::milliseconds(300);
   EXPECT_GE(expiration, min_expiration);
   EXPECT_LE(expiration, max_expiration);
+}
+
+// ============================================================================
+// GetRandomNodeFromShard and GetLocalNodeFromShard Tests
+// ============================================================================
+
+TEST_F(ClusterMapTest, GetLocalNodeFromShardTest) {
+  // Create a shard with both local and remote nodes
+  std::vector<SlotRangeConfig> ranges = {
+      {.start_slot = 0,
+       .end_slot = 5460,
+       .primary = NodeConfig{"127.0.0.1", 30001, primary_ids.at(0), {}},
+       .replicas = {NodeConfig{"127.0.0.1", 30004, replica_ids.at(0), {}},
+                    NodeConfig{"127.0.0.1", 30005, replica_ids.at(1), {}}}}};
+
+  // Test when local node is primary
+  auto cluster_map = CreateClusterMapWithConfig(ranges, primary_ids.at(0));
+  ASSERT_NE(cluster_map, nullptr);
+
+  const ShardInfo* shard = cluster_map->GetShardById(primary_ids.at(0));
+  ASSERT_NE(shard, nullptr);
+
+  // Test GetLocalNodeFromShard without replica_only (should return primary)
+  auto targets_with_local =
+      cluster_map->GetTargets(FanoutTargetMode::kRandom, true);
+  EXPECT_EQ(targets_with_local.size(), 1);
+  EXPECT_TRUE(targets_with_local[0].is_local);
+  EXPECT_TRUE(targets_with_local[0].is_primary);
+
+  // Test when local node is replica
+  auto cluster_map2 = CreateClusterMapWithConfig(ranges, replica_ids.at(0));
+  ASSERT_NE(cluster_map2, nullptr);
+
+  const ShardInfo* shard2 = cluster_map2->GetShardById(primary_ids.at(0));
+  ASSERT_NE(shard2, nullptr);
+
+  auto targets_with_local2 =
+      cluster_map2->GetTargets(FanoutTargetMode::kRandom, true);
+  EXPECT_EQ(targets_with_local2.size(), 1);
+  EXPECT_TRUE(targets_with_local2[0].is_local);
+  EXPECT_FALSE(targets_with_local2[0].is_primary);
+
+  // Test when no local nodes exist
+  auto cluster_map3 = CreateClusterMapWithConfig(ranges, "nonexistent_node_id");
+  ASSERT_NE(cluster_map3, nullptr);
+
+  auto targets_with_local3 =
+      cluster_map3->GetTargets(FanoutTargetMode::kRandom, true);
+  EXPECT_EQ(targets_with_local3.size(), 1);
+  EXPECT_FALSE(targets_with_local3[0].is_local);
+}
+
+TEST_F(ClusterMapTest, GetRandomNodeFromShardTest) {
+  // Create a shard with multiple nodes
+  std::vector<SlotRangeConfig> ranges = {
+      {.start_slot = 0,
+       .end_slot = 5460,
+       .primary = NodeConfig{"127.0.0.1", 30001, primary_ids.at(0), {}},
+       .replicas = {NodeConfig{"127.0.0.1", 30004, replica_ids.at(0), {}},
+                    NodeConfig{"127.0.0.1", 30005, replica_ids.at(1), {}},
+                    NodeConfig{"127.0.0.1", 30006, replica_ids.at(2), {}}}}};
+
+  auto cluster_map = CreateClusterMapWithConfig(ranges, primary_ids.at(0));
+  ASSERT_NE(cluster_map, nullptr);
+
+  // Test random selection without preference
+  std::set<std::string> selected_nodes;
+  for (int i = 0; i < 20; ++i) {
+    auto targets = cluster_map->GetTargets(FanoutTargetMode::kRandom, false);
+    EXPECT_EQ(targets.size(), 1);
+    selected_nodes.insert(targets[0].node_id);
+  }
+
+  // Should have selected different nodes (randomness test)
+  EXPECT_GT(selected_nodes.size(), 1);
+
+  // Test replica-only selection
+  auto replica_targets =
+      cluster_map->GetTargets(FanoutTargetMode::kOneReplicaPerShard, false);
+  EXPECT_EQ(replica_targets.size(), 1);
+  EXPECT_FALSE(replica_targets[0].is_primary);
+}
+
+TEST_F(ClusterMapTest, GetRandomNodeFromShardReplicaOnlyTest) {
+  // Create a shard with primary and replicas
+  std::vector<SlotRangeConfig> ranges = {
+      {.start_slot = 0,
+       .end_slot = 5460,
+       .primary = NodeConfig{"127.0.0.1", 30001, primary_ids.at(0), {}},
+       .replicas = {NodeConfig{"127.0.0.1", 30004, replica_ids.at(0), {}},
+                    NodeConfig{"127.0.0.1", 30005, replica_ids.at(1), {}}}}};
+
+  auto cluster_map = CreateClusterMapWithConfig(ranges, primary_ids.at(0));
+  ASSERT_NE(cluster_map, nullptr);
+
+  // Test replica-only selection multiple times
+  std::set<std::string> selected_replicas;
+  for (int i = 0; i < 10; ++i) {
+    auto targets =
+        cluster_map->GetTargets(FanoutTargetMode::kOneReplicaPerShard, false);
+    EXPECT_EQ(targets.size(), 1);
+    EXPECT_FALSE(targets[0].is_primary);
+    selected_replicas.insert(targets[0].node_id);
+  }
+
+  // Should only select from replicas
+  for (const auto& node_id : selected_replicas) {
+    EXPECT_TRUE(node_id == replica_ids.at(0) || node_id == replica_ids.at(1));
+  }
+}
+
+TEST_F(ClusterMapTest, GetLocalNodeFromShardWithReplicaOnlyTest) {
+  // Create a shard where local node is primary
+  std::vector<SlotRangeConfig> ranges = {
+      {.start_slot = 0,
+       .end_slot = 5460,
+       .primary = NodeConfig{"127.0.0.1", 30001, primary_ids.at(0), {}},
+       .replicas = {NodeConfig{"127.0.0.1", 30004, replica_ids.at(0), {}}}}};
+
+  auto cluster_map = CreateClusterMapWithConfig(ranges, primary_ids.at(0));
+  ASSERT_NE(cluster_map, nullptr);
+
+  // Test replica-only with prefer_local when local is primary
+  // Should fall back to random replica since local primary is excluded
+  auto targets =
+      cluster_map->GetTargets(FanoutTargetMode::kOneReplicaPerShard, true);
+  EXPECT_EQ(targets.size(), 1);
+  EXPECT_FALSE(targets[0].is_primary);
+  EXPECT_FALSE(
+      targets[0]
+          .is_local);  // Local primary excluded, so remote replica selected
+
+  // Test when local node is replica
+  auto cluster_map2 = CreateClusterMapWithConfig(ranges, replica_ids.at(0));
+  ASSERT_NE(cluster_map2, nullptr);
+
+  auto targets2 =
+      cluster_map2->GetTargets(FanoutTargetMode::kOneReplicaPerShard, true);
+  EXPECT_EQ(targets2.size(), 1);
+  EXPECT_FALSE(targets2[0].is_primary);
+  EXPECT_TRUE(targets2[0].is_local);  // Local replica should be selected
+}
+
+TEST_F(ClusterMapTest, GetTargetsWithPreferLocalTest) {
+  // Create multiple shards with mixed local/remote nodes
+  std::vector<SlotRangeConfig> ranges = {
+      {.start_slot = 0,
+       .end_slot = 5460,
+       .primary = NodeConfig{"127.0.0.1", 30001, primary_ids.at(0), {}},
+       .replicas = {NodeConfig{"127.0.0.1", 30004, replica_ids.at(0), {}}}},
+      {.start_slot = 5461,
+       .end_slot = 10922,
+       .primary = NodeConfig{"127.0.0.1", 30002, primary_ids.at(1), {}},
+       .replicas = {NodeConfig{"127.0.0.1", 30005, replica_ids.at(1), {}}}}};
+
+  // Local node is first primary
+  auto cluster_map = CreateClusterMapWithConfig(ranges, primary_ids.at(0));
+  ASSERT_NE(cluster_map, nullptr);
+
+  // Test prefer_local = true
+  auto targets_prefer_local =
+      cluster_map->GetTargets(FanoutTargetMode::kRandom, true);
+  EXPECT_EQ(targets_prefer_local.size(), 2);
+
+  // First shard should select local primary
+  bool found_local_primary = false;
+  for (const auto& target : targets_prefer_local) {
+    if (target.node_id == primary_ids.at(0)) {
+      EXPECT_TRUE(target.is_local);
+      EXPECT_TRUE(target.is_primary);
+      found_local_primary = true;
+    }
+  }
+  EXPECT_TRUE(found_local_primary);
+
+  // Test prefer_local = false (default behavior)
+  auto targets_no_preference =
+      cluster_map->GetTargets(FanoutTargetMode::kRandom, false);
+  EXPECT_EQ(targets_no_preference.size(), 2);
 }
 
 }  // namespace

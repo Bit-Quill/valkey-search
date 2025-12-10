@@ -17,7 +17,6 @@
 #include "src/coordinator/client_pool.h"
 #include "src/coordinator/coordinator.pb.h"
 #include "src/index_schema.h"
-#include "src/query/fanout_template.h"
 #include "src/query/search.h"
 #include "vmsdk/src/cluster_map.h"
 #include "vmsdk/src/thread_pool.h"
@@ -31,6 +30,9 @@ absl::Status PerformSearchFanoutAsync(
     coordinator::ClientPool* coordinator_client_pool,
     std::unique_ptr<query::SearchParameters> parameters,
     vmsdk::ThreadPool* thread_pool, query::SearchResponseCallback callback);
+
+// Utility function to check if system is under low utilization
+bool IsSystemUnderLowUtilization();
 
 }  // namespace valkey_search::query::fanout
 

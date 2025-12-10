@@ -37,21 +37,22 @@ static constexpr highwayhash::HHKey kHashKey{
 
 // Enumeration for fanout target modes
 enum class FanoutTargetMode {
-  kRandom,        // Default: randomly select one node per shard
-  kReplicasOnly,  // Select only replicas, one per shard
-  kPrimary,       // Select all primary (master) nodes
-  kAll            // Select all nodes (both primary and replica)
+  kRandom,              // Default: randomly select one node per shard
+  kOneReplicaPerShard,  // Select only replicas, one per shard
+  kPrimary,             // Select all primary nodes
+  kReplicas,            // Select all replica nodes
+  kAll                  // Select all nodes (both primary and replica)
 };
 
-const size_t k_num_slots = 16384;
+const size_t kNumSlots = 16384;
 
 // forward declaration to solve circular dependency
 struct ShardInfo;
 
 struct NodeInfo {
   std::string node_id;
-  bool is_primary;
-  bool is_local;
+  bool is_primary = false;
+  bool is_local = false;
   SocketAddress socket_address;
   // a map containing all additional network metadata(the fourth entry of
   // CLUSTER SLOTS response); can be empty
@@ -95,14 +96,9 @@ class ClusterMap {
   // would replace the existing map once the creation is finished
   static std::shared_ptr<ClusterMap> CreateNewClusterMap(ValkeyModuleCtx* ctx);
 
-  // return pre-generated target vectors
-  const std::vector<NodeInfo>& GetPrimaryTargets() const {
-    return primary_targets_;
-  };
-  const std::vector<NodeInfo>& GetReplicaTargets() const {
-    return replica_targets_;
-  };
-  const std::vector<NodeInfo>& GetAllTargets() const { return all_targets_; };
+  // get a vector of node targets based on the mode
+  std::vector<NodeInfo> GetTargets(FanoutTargetMode mode,
+                                   bool prefer_local = false) const;
 
   std::chrono::steady_clock::time_point GetExpirationTime() const {
     return expiration_tp_;
@@ -110,12 +106,6 @@ class ClusterMap {
 
   // are all the slots assigned to some shard
   bool IsConsistent() const { return is_consistent_; }
-
-  // generate a random targets vector with one node from each shard
-  std::vector<NodeInfo> GetRandomTargets() const;
-
-  // get a random node from a shard
-  const NodeInfo& GetRandomNodeFromShard(const ShardInfo& shard) const;
 
   // do I own this slot
   bool IOwnSlot(uint16_t slot) const { return owned_slots_[slot]; }
@@ -125,6 +115,9 @@ class ClusterMap {
 
   // shard lookup by slot, return nullptr if shard not found
   const ShardInfo* GetShardBySlot(uint16_t slot) const;
+
+  // Get the shard info for the current node
+  const ShardInfo* GetCurrentNodeShard() const { return current_node_shard_; }
 
   // get cluster level slot fingerprint
   uint64_t GetClusterSlotsFingerprint() const {
@@ -138,7 +131,7 @@ class ClusterMap {
   absl::flat_hash_map<SocketAddress, std::string> socket_addr_to_node_map;
 
   // 1: slot is owned by this cluster, 0: slot is not owned by this cluster
-  std::bitset<k_num_slots> owned_slots_;
+  std::bitset<kNumSlots> owned_slots_;
 
   absl::btree_map<std::string, ShardInfo> shards_;
 
@@ -151,10 +144,22 @@ class ClusterMap {
 
   bool is_consistent_;
 
+  // Cached pointer to the current node's shard
+  const ShardInfo* current_node_shard_;
+
   // Pre-computed target lists
   std::vector<NodeInfo> primary_targets_;
   std::vector<NodeInfo> replica_targets_;
   std::vector<NodeInfo> all_targets_;
+
+  // get a local node from a shard (prefers local nodes)
+  std::optional<NodeInfo> GetLocalNodeFromShard(
+      const ShardInfo& shard, bool replica_only = false) const;
+
+  // get a random node from a shard
+  NodeInfo GetRandomNodeFromShard(const ShardInfo& shard,
+                                  bool replica_only = false,
+                                  bool prefer_local = false) const;
 
   // helper function to print out cluster map for debug
   static void PrintClusterMap(std::shared_ptr<ClusterMap> map);
@@ -169,7 +174,8 @@ class ClusterMap {
   // Helper functions for CreateNewClusterMap
   // parse and return a single node info, or return empty if node is invalid
   std::optional<NodeInfo> ParseNodeInfo(ValkeyModuleCallReply* node_arr,
-                                        bool is_local_shard, bool is_primary);
+                                        const char* my_node_id,
+                                        bool is_primary);
 
   // check is this a local shard
   bool IsLocalShard(ValkeyModuleCallReply* slot_range, const char* my_node_id);
