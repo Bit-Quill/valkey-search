@@ -24,6 +24,7 @@
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "ft_create_parser.h"
+#include "ft_search_parser.h"
 #include "src/commands/filter_parser.h"
 #include "src/index_schema.h"
 #include "src/indexes/index_base.h"
@@ -66,6 +67,7 @@ constexpr absl::string_view kDialectParam{"DIALECT"};
 constexpr absl::string_view kLimitParam{"LIMIT"};
 constexpr absl::string_view kNoContentParam{"NOCONTENT"};
 constexpr absl::string_view kReturnParam{"RETURN"};
+constexpr absl::string_view kSortByParam{"SORTBY"};
 constexpr absl::string_view kTimeoutParam{"TIMEOUT"};
 constexpr absl::string_view kAsParam{"AS"};
 constexpr absl::string_view kLocalOnly{"LOCALONLY"};
@@ -199,11 +201,54 @@ absl::Status ParseKNN(query::SearchParameters &parameters,
                                          close_position - position - 1));
 }
 
-std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
-ConstructLimitParser() {
-  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
-      [](query::SearchParameters &parameters,
-         vmsdk::ArgsIterator &itr) -> absl::Status {
+absl::Status Verify(query::SearchParameters &parameters) {
+  // Only verify the vector KNN parameters for vector based queries.
+  if (!parameters.IsNonVectorQuery()) {
+    if (parameters.query.empty()) {
+      return absl::InvalidArgumentError("Invalid Query Syntax");
+    }
+    if (parameters.ef.has_value()) {
+      auto max_ef_runtime_value = options::GetMaxEfRuntime().GetValue();
+      VMSDK_RETURN_IF_ERROR(
+          vmsdk::VerifyRange(parameters.ef.value(), 1, max_ef_runtime_value))
+          << "`EF_RUNTIME` must be a positive integer greater than 0 and "
+             "cannot "
+             "exceed "
+          << max_ef_runtime_value << ".";
+    }
+    auto max_knn_value = options::GetMaxKnn().GetValue();
+    VMSDK_RETURN_IF_ERROR(vmsdk::VerifyRange(parameters.k, 1, max_knn_value))
+        << "KNN parameter must be a positive integer greater than 0 and cannot "
+           "exceed "
+        << max_knn_value << ".";
+  }
+  if (parameters.timeout_ms > query::kMaxTimeoutMs) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(kTimeoutParam,
+                     " must be a positive integer greater than 0 and "
+                     "cannot exceed ",
+                     query::kMaxTimeoutMs, "."));
+  }
+  if (parameters.dialect < 2 || parameters.dialect > 4) {
+    return absl::InvalidArgumentError(
+        "DIALECT requires a non negative integer >=2 and <= 4");
+  }
+
+  // Validate all parameters used, nuke the map to avoid dangling pointers
+  while (!parameters.parse_vars.params.empty()) {
+    auto begin = parameters.parse_vars.params.begin();
+    if (begin->second.first == 0) {
+      return absl::NotFoundError(
+          absl::StrCat("Parameter `", begin->first, "` not used."));
+    }
+    parameters.parse_vars.params.erase(begin);
+  }
+  return absl::OkStatus();
+}
+
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructLimitParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
         VMSDK_RETURN_IF_ERROR(
             vmsdk::ParseParamValue(itr, parameters.limit.first_index));
         VMSDK_RETURN_IF_ERROR(
@@ -212,11 +257,9 @@ ConstructLimitParser() {
       });
 }
 
-std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
-ConstructParamsParser() {
-  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
-      [](query::SearchParameters &parameters,
-         vmsdk::ArgsIterator &itr) -> absl::Status {
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructParamsParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
         unsigned count{0};
         VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, count));
         if (count & 1) {
@@ -241,12 +284,35 @@ ConstructParamsParser() {
         return absl::OkStatus();
       });
 }
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructSortByParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
+        vmsdk::UniqueValkeyString field;
+        VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, field));
+        parameters.sortby.field = vmsdk::ToStringView(field.get());
+        parameters.sortby.enabled = true;
 
-std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
-ConstructReturnParser() {
-  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
-      [](query::SearchParameters &parameters,
-         vmsdk::ArgsIterator &itr) -> absl::Status {
+        // Check for optional ASC/DESC parameter
+        if (itr.DistanceEnd() > 0) {
+          auto next_arg = itr.Get();
+          if (next_arg.ok()) {
+            absl::string_view order_str = vmsdk::ToStringView(next_arg.value());
+            if (absl::EqualsIgnoreCase(order_str, "ASC")) {
+              parameters.sortby.order = SortOrder::kAscending;
+              itr.Next();
+            } else if (absl::EqualsIgnoreCase(order_str, "DESC")) {
+              parameters.sortby.order = SortOrder::kDescending;
+              itr.Next();
+            }
+            // If it's neither ASC nor DESC, leave it for the next parser
+          }
+        }
+        return absl::OkStatus();
+      });
+}
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructReturnParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
         uint32_t cnt{0};
         VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, cnt));
         if (cnt == 0) {
@@ -280,38 +346,32 @@ ConstructReturnParser() {
       });
 }
 
-vmsdk::KeyValueParser<query::SearchParameters> CreateSearchParser() {
-  vmsdk::KeyValueParser<query::SearchParameters> parser;
+vmsdk::KeyValueParser<SearchCommand> CreateSearchParser() {
+  vmsdk::KeyValueParser<SearchCommand> parser;
+  parser.AddParamParser(kDialectParam,
+                        GENERATE_VALUE_PARSER(SearchCommand, dialect));
+  parser.AddParamParser(kLocalOnly,
+                        GENERATE_FLAG_PARSER(SearchCommand, local_only));
+  parser.AddParamParser(kAllShards, GENERATE_NEGATED_FLAG_PARSER(
+                                        SearchCommand, enable_partial_results));
   parser.AddParamParser(
-      kDialectParam, GENERATE_VALUE_PARSER(query::SearchParameters, dialect));
+      KSomeShards, GENERATE_FLAG_PARSER(SearchCommand, enable_partial_results));
   parser.AddParamParser(
-      kLocalOnly, GENERATE_FLAG_PARSER(query::SearchParameters, local_only));
-  parser.AddParamParser(kAllShards,
-                        GENERATE_NEGATED_FLAG_PARSER(query::SearchParameters,
-                                                     enable_partial_results));
-  parser.AddParamParser(
-      KSomeShards,
-      GENERATE_FLAG_PARSER(query::SearchParameters, enable_partial_results));
-  parser.AddParamParser(
-      kConsistent,
-      GENERATE_FLAG_PARSER(query::SearchParameters, enable_consistency));
-  parser.AddParamParser(kInconsistent,
-                        GENERATE_NEGATED_FLAG_PARSER(query::SearchParameters,
-                                                     enable_consistency));
-  parser.AddParamParser(
-      kTimeoutParam,
-      GENERATE_VALUE_PARSER(query::SearchParameters, timeout_ms));
+      kConsistent, GENERATE_FLAG_PARSER(SearchCommand, enable_consistency));
+  parser.AddParamParser(kInconsistent, GENERATE_NEGATED_FLAG_PARSER(
+                                           SearchCommand, enable_consistency));
+  parser.AddParamParser(kTimeoutParam,
+                        GENERATE_VALUE_PARSER(SearchCommand, timeout_ms));
   parser.AddParamParser(kLimitParam, ConstructLimitParser());
-  parser.AddParamParser(
-      kNoContentParam,
-      GENERATE_FLAG_PARSER(query::SearchParameters, no_content));
+  parser.AddParamParser(kNoContentParam,
+                        GENERATE_FLAG_PARSER(SearchCommand, no_content));
   parser.AddParamParser(kReturnParam, ConstructReturnParser());
+  parser.AddParamParser(kSortByParam, ConstructSortByParser());
   parser.AddParamParser(kParamsParam, ConstructParamsParser());
   return parser;
 }
 
-static vmsdk::KeyValueParser<query::SearchParameters> SearchParser =
-    CreateSearchParser();
+static vmsdk::KeyValueParser<SearchCommand> SearchParser = CreateSearchParser();
 
 }  // namespace
 
@@ -411,6 +471,42 @@ absl::Status PostParseQueryString(query::SearchParameters &parameters) {
     VMSDK_RETURN_IF_ERROR(PostParseVectorParameters(parameters)).SetPrepend()
         << "Error parsing vector similarity parameters: ";
   }
+
+  if (auto searchCommand = dynamic_cast<SearchCommand *>(&parameters);
+      searchCommand && searchCommand->sortby.enabled) {
+    // Validate sortby field exists in the index schema
+    VMSDK_RETURN_IF_ERROR(
+        parameters.index_schema->GetIdentifier(searchCommand->sortby.field)
+            .status());
+    // Ensure sortby field is in return_attributes if sorting is enabled
+    if (!parameters.no_content && !parameters.return_attributes.empty()) {
+      bool found = false;
+      for (const auto &attr : parameters.return_attributes) {
+        if (vmsdk::ToStringView(attr.identifier.get()) ==
+                searchCommand->sortby.field ||
+            (attr.attribute_alias &&
+             vmsdk::ToStringView(attr.attribute_alias.get()) ==
+                 searchCommand->sortby.field)) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        auto identifier =
+            vmsdk::MakeUniqueValkeyString(searchCommand->sortby.field);
+        auto schema_identifier =
+            parameters.index_schema->GetIdentifier(searchCommand->sortby.field);
+        vmsdk::UniqueValkeyString attribute_alias;
+        if (schema_identifier.ok()) {
+          attribute_alias = vmsdk::RetainUniqueValkeyString(identifier.get());
+          identifier = vmsdk::MakeUniqueValkeyString(*schema_identifier);
+        }
+        parameters.return_attributes.emplace_back(query::ReturnAttribute{
+            std::move(identifier), std::move(attribute_alias), nullptr});
+      }
+    }
+  }
+
   return absl::OkStatus();
 }
 

@@ -69,6 +69,11 @@ struct FTSearchParserTestCase {
   std::string search_parameters_str;
   uint64_t timeout_ms{query::kTimeoutMS};
   bool vector_query{true};
+  // SORTBY test fields
+  std::string sortby_parameters_str;
+  std::string sortby_field;
+  SortOrder sortby_order{SortOrder::kAscending};
+  bool sortby_enabled{false};
 };
 
 class FTSearchParserTest
@@ -98,7 +103,7 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
   if (timeout_ms.has_value()) {
     std::cerr << ", timeout_ms: " << timeout_ms.value();
   }
-  std::cerr << ", no_content: " << no_content << "\n";
+  std::cerr << "\n";
 
   std::vector<float> floats = {0.1, 0.2, 0.3};
   std::vector<ValkeyModuleString *> args;
@@ -112,7 +117,10 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
       OpenKey(testing::_, testing::An<ValkeyModuleString *>(), testing::_))
       .WillRepeatedly(TestValkeyModule_OpenKeyDefaultImpl);
   EXPECT_CALL(*index_schema, GetIdentifier(::testing::_))
-      .Times(::testing::AnyNumber());
+      .Times(::testing::AnyNumber())
+      .WillRepeatedly([&index_schema](absl::string_view field) {
+        return index_schema->IndexSchema::GetIdentifier(field);
+      });
   if (test_case.vector_query) {
     // Vector index setup
     data_model::VectorIndex vector_index_proto;
@@ -189,6 +197,10 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
       dialect_expected_success = kDialectOptions[dialect_itr].first;
     }
   }
+  auto sortby_parameters_vec =
+      vmsdk::ToValkeyStringVector(test_case.sortby_parameters_str);
+  args.insert(args.end(), sortby_parameters_vec.begin(),
+              sortby_parameters_vec.end());
   if (add_end_unexpected_param) {
     args.push_back(
         ValkeyModule_CreateString(nullptr, "END_UNEXPECTED_PARAM", 0));
@@ -267,6 +279,12 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
       EXPECT_EQ(search_params.value()->timeout_ms, timeout_ms.value());
     } else {
       EXPECT_EQ(search_params.value()->timeout_ms, test_case.timeout_ms);
+    }
+    // Validate SORTBY parameters
+    EXPECT_EQ(search_params.value()->sortby.enabled, test_case.sortby_enabled);
+    if (test_case.sortby_enabled) {
+      EXPECT_EQ(search_params.value()->sortby.field, test_case.sortby_field);
+      EXPECT_EQ(search_params.value()->sortby.order, test_case.sortby_order);
     }
   } else {
     std::cerr << "Failed to parse command: `" << vmsdk::ToStringView(args[0])
@@ -724,6 +742,68 @@ INSTANTIATE_TEST_SUITE_P(
                 "Error parsing vector similarity parameters: `[KNN 10 @vec1 "
                 "]`. Blob attribute "
                 "argument is missing",
+        },
+        {
+            .test_name = "sortby_numeric_asc",
+            .success = true,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_1:[300 1000]",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .vector_query = false,
+            .sortby_parameters_str = "SORTBY attribute_identifier_1 ASC",
+            .sortby_field = "attribute_identifier_1",
+            .sortby_order = SortOrder::kAscending,
+            .sortby_enabled = true,
+        },
+        {
+            .test_name = "sortby_numeric_desc",
+            .success = true,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_1:[300 1000]",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .vector_query = false,
+            .sortby_parameters_str = "SORTBY attribute_identifier_1 DESC",
+            .sortby_field = "attribute_identifier_1",
+            .sortby_order = SortOrder::kDescending,
+            .sortby_enabled = true,
+        },
+        {
+            .test_name = "sortby_tag_default",
+            .success = true,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_2:{electronics}",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .vector_query = false,
+            .sortby_parameters_str = "SORTBY attribute_identifier_2",
+            .sortby_field = "attribute_identifier_2",
+            .sortby_order = SortOrder::kAscending,
+            .sortby_enabled = true,
+        },
+        {
+            .test_name = "sortby_field_not_present",
+            .success = false,
+            .params_str = "",
+            .filter_str = "@attribute_identifier_2:{electronics}",
+            .attribute_alias = "",
+            .k = 0,
+            .ef = 0,
+            .score_as = "",
+            .vector_query = false,
+            .sortby_parameters_str = "SORTBY nonexistent_field",
+            .sortby_field = "nonexistent_field",
+            .sortby_order = SortOrder::kAscending,
+            .sortby_enabled = true,
+            .expected_error_message =
+                "Index field `nonexistent_field` does not exist",
         },
     }),
     [](const TestParamInfo<FTSearchParserTestCase> &info) {
