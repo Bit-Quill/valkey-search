@@ -246,11 +246,9 @@ absl::Status Verify(query::SearchParameters &parameters) {
   return absl::OkStatus();
 }
 
-std::unique_ptr<vmsdk::ParamParser<query::SearchParameters>>
-ConstructLimitParser() {
-  return std::make_unique<vmsdk::ParamParser<query::SearchParameters>>(
-      [](query::SearchParameters &parameters,
-         vmsdk::ArgsIterator &itr) -> absl::Status {
+std::unique_ptr<vmsdk::ParamParser<SearchCommand>> ConstructLimitParser() {
+  return std::make_unique<vmsdk::ParamParser<SearchCommand>>(
+      [](SearchCommand &parameters, vmsdk::ArgsIterator &itr) -> absl::Status {
         VMSDK_RETURN_IF_ERROR(
             vmsdk::ParseParamValue(itr, parameters.limit.first_index));
         VMSDK_RETURN_IF_ERROR(
