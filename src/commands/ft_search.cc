@@ -252,7 +252,7 @@ void SearchCommand::SendReply(ValkeyModuleCtx *ctx,
     query::ProcessNonVectorNeighborsForReply(
         ctx, index_schema->GetAttributeDataType(), neighbors, *this);
     ApplySorting(neighbors, *this);
-    SerializeNonVectorNeighbors(ctx, neighbors, *this);
+    SerializeNonVectorNeighbors(ctx, search_result, *this);
     return;
   }
   auto identifier = index_schema->GetIdentifier(attribute_alias);
