@@ -144,19 +144,18 @@ void SerializeNonVectorNeighbors(ValkeyModuleCtx *ctx,
 // Apply sorting to neighbors based on attribute values in attribute_contents
 void ApplySorting(std::deque<indexes::Neighbor> &neighbors,
                   const SearchCommand &parameters) {
-  if (!parameters.sortby.enabled || neighbors.empty()) {
+  if (!parameters.sortby.has_value() || neighbors.empty()) {
     return;
   }
 
+  auto sortby = parameters.sortby.value();
   // Resolve sortby field to actual identifier (handle aliases)
-  auto schema_identifier =
-      parameters.index_schema->GetIdentifier(parameters.sortby.field);
+  auto schema_identifier = parameters.index_schema->GetIdentifier(sortby.field);
   std::string sortby_identifier =
-      schema_identifier.ok() ? *schema_identifier : parameters.sortby.field;
+      schema_identifier.ok() ? *schema_identifier : sortby.field;
 
   // Check if field is a declared numeric attribute
-  auto index_result =
-      parameters.index_schema->GetIndex(parameters.sortby.field);
+  auto index_result = parameters.index_schema->GetIndex(sortby.field);
   bool is_numeric =
       index_result.ok() &&
       index_result.value()->GetIndexerType() == indexes::IndexerType::kNumeric;
@@ -196,9 +195,9 @@ void ApplySorting(std::deque<indexes::Neighbor> &neighbors,
       case expr::Ordering::kEQUAL:
       case expr::Ordering::kUNORDERED:
       case expr::Ordering::kGREATER:
-        return parameters.sortby.order == SortOrder::kDescending;
+        return sortby.order == SortOrder::kDescending;
       case expr::Ordering::kLESS:
-        return parameters.sortby.order == SortOrder::kAscending;
+        return sortby.order == SortOrder::kAscending;
     }
   };
 
@@ -241,17 +240,10 @@ void SearchCommand::SendReply(ValkeyModuleCtx *ctx,
   if (IsNonVectorQuery()) {
     query::ProcessNonVectorNeighborsForReply(
         ctx, index_schema->GetAttributeDataType(), neighbors, *this);
+    ApplySorting(neighbors, *this);
     // Adjust total count based on neighbors removed during processing
     // due to filtering or missing attributes.
     search_result.total_count -= (original_size - neighbors.size());
-    SerializeNonVectorNeighbors(ctx, search_result, *this);
-    return;
-  }
-  // Support non-vector queries
-  if (IsNonVectorQuery()) {
-    query::ProcessNonVectorNeighborsForReply(
-        ctx, index_schema->GetAttributeDataType(), neighbors, *this);
-    ApplySorting(neighbors, *this);
     SerializeNonVectorNeighbors(ctx, search_result, *this);
     return;
   }

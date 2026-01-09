@@ -281,10 +281,11 @@ void DoVectorSearchParserTest(const FTSearchParserTestCase &test_case,
       EXPECT_EQ(search_params.value()->timeout_ms, test_case.timeout_ms);
     }
     // Validate SORTBY parameters
-    EXPECT_EQ(search_params.value()->sortby.enabled, test_case.sortby_enabled);
+    EXPECT_EQ(search_params.value()->sortby.has_value(),
+              test_case.sortby_enabled);
     if (test_case.sortby_enabled) {
-      EXPECT_EQ(search_params.value()->sortby.field, test_case.sortby_field);
-      EXPECT_EQ(search_params.value()->sortby.order, test_case.sortby_order);
+      EXPECT_EQ(search_params.value()->sortby->field, test_case.sortby_field);
+      EXPECT_EQ(search_params.value()->sortby->order, test_case.sortby_order);
     }
   } else {
     std::cerr << "Failed to parse command: `" << vmsdk::ToStringView(args[0])
