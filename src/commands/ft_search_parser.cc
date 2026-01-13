@@ -237,7 +237,7 @@ static vmsdk::KeyValueParser<SearchCommand> SearchParser = CreateSearchParser();
 }  // namespace
 
 absl::Status SearchCommand::PostParseQueryString() {
-  VMSDK_RETURN_IF_ERROR(this->query::SearchParameters::PostParseQueryString());
+  VMSDK_RETURN_IF_ERROR(query::SearchParameters::PostParseQueryString());
 
   if (sortby.has_value()) {
     // Validate sortby field exists in the index schema
