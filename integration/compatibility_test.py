@@ -390,6 +390,7 @@ class TestAnswersCMD(ValkeySearchTestCaseBase):
                     print(f"Failed test {k:60}: {v} times")
             assert False
 
+        '''
         print(f"Correct answers: {correct_answers} out of {len(answers)}")
         if len(failed_tests) != 0:
             print(">>>>>>>>> Failed Tests <<<<<<<<<")
@@ -399,10 +400,14 @@ class TestAnswersCMD(ValkeySearchTestCaseBase):
         for k, v in passed_tests.items():
             print(f"Passed test {k:60}: {v} times")
 
+        f = open("compatibility/" + ANSWER_FILE_NAME, "rb")
+        client = ClientLSystem()
+        data_set = None
+        answers = pickle.load(f)
         print(f"Loaded {len(answers)} answers")
         data_set = None
         for i in range(len(answers)):
-            data_set = do_answer(self.server.get_new_client(), answers[i], data_set)
+            data_set = do_answer(answers[i], data_set)
 
         print(f"Correct answers: {correct_answers} out of {len(answers)}")
         if len(failed_tests) != 0:
@@ -412,3 +417,4 @@ class TestAnswersCMD(ValkeySearchTestCaseBase):
         print(">>>>>>>>> Passed Tests <<<<<<<<<")
         for k, v in passed_tests.items():
             print(f"Passed test {k:60}: {v} times")
+    '''

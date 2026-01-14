@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <cstdint>
 #include <deque>
 #include <optional>
 #include <utility>
@@ -240,21 +239,18 @@ void SearchCommand::SendReply(ValkeyModuleCtx *ctx,
   if (IsNonVectorQuery()) {
     query::ProcessNonVectorNeighborsForReply(
         ctx, index_schema->GetAttributeDataType(), neighbors, *this);
-    ApplySorting(neighbors, *this);
-    // Adjust total count based on neighbors removed during processing
-    // due to filtering or missing attributes.
-    search_result.total_count -= (original_size - neighbors.size());
-    SerializeNonVectorNeighbors(ctx, search_result, *this);
-    return;
+  } else {
+    auto identifier = index_schema->GetIdentifier(attribute_alias);
+    if (!identifier.ok()) {
+      ++Metrics::GetStats().query_failed_requests_cnt;
+      ValkeyModule_ReplyWithError(ctx, identifier.status().message().data());
+      return;
+    }
+    query::ProcessNeighborsForReply(ctx, index_schema->GetAttributeDataType(),
+                                    neighbors, *this, identifier.value());
   }
-  auto identifier = index_schema->GetIdentifier(attribute_alias);
-  if (!identifier.ok()) {
-    ++Metrics::GetStats().query_failed_requests_cnt;
-    ValkeyModule_ReplyWithError(ctx, identifier.status().message().data());
-    return;
-  }
-  query::ProcessNeighborsForReply(ctx, index_schema->GetAttributeDataType(),
-                                  neighbors, *this, identifier.value());
+
+  ApplySorting(neighbors, *this);
   // Adjust total count based on neighbors removed during processing
   // due to filtering or missing attributes.
   search_result.total_count -= (original_size - neighbors.size());
