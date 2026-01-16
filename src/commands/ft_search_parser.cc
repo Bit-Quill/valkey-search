@@ -209,7 +209,7 @@ vmsdk::KeyValueParser<SearchCommand> CreateSearchParser() {
                         GENERATE_FLAG_PARSER(SearchCommand, local_only));
   parser.AddParamParser(
       query::kAllShards,
-      GENERATE_NEGATED_FLAG_PARSER(SearchCommand, enable_partial_results));
+      GENERATE_NEGATIVE_FLAG_PARSER(SearchCommand, enable_partial_results));
   parser.AddParamParser(
       query::kSomeShards,
       GENERATE_FLAG_PARSER(SearchCommand, enable_partial_results));
@@ -218,17 +218,22 @@ vmsdk::KeyValueParser<SearchCommand> CreateSearchParser() {
       GENERATE_FLAG_PARSER(SearchCommand, enable_consistency));
   parser.AddParamParser(
       query::kInconsistent,
-      GENERATE_NEGATED_FLAG_PARSER(SearchCommand, enable_consistency));
-
+      GENERATE_NEGATIVE_FLAG_PARSER(SearchCommand, enable_consistency));
   parser.AddParamParser(query::kTimeoutParam,
                         GENERATE_VALUE_PARSER(SearchCommand, timeout_ms));
-
   parser.AddParamParser(query::kLimitParam, ConstructLimitParser());
   parser.AddParamParser(query::kNoContentParam,
                         GENERATE_FLAG_PARSER(SearchCommand, no_content));
   parser.AddParamParser(query::kReturnParam, ConstructReturnParser());
   parser.AddParamParser(query::kSortByParam, ConstructSortByParser());
   parser.AddParamParser(query::kParamsParam, ConstructParamsParser());
+  parser.AddParamParser(query::kInorder,
+                        GENERATE_FLAG_PARSER(SearchCommand, inorder));
+  parser.AddParamParser(query::kVerbatim,
+                        GENERATE_FLAG_PARSER(SearchCommand, verbatim));
+  parser.AddParamParser(query::kSlop,
+                        GENERATE_VALUE_PARSER(SearchCommand, slop));
+
   return parser;
 }
 

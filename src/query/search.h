@@ -24,6 +24,7 @@
 #include "absl/status/statusor.h"
 #include "src/commands/filter_parser.h"
 #include "src/index_schema.h"
+#include "src/index_schema.pb.h"
 #include "src/indexes/index_base.h"
 #include "src/indexes/vector_base.h"
 #include "src/query/predicate.h"
@@ -64,6 +65,9 @@ constexpr absl::string_view kSomeShards{"SOMESHARDS"};
 constexpr absl::string_view kConsistent{"CONSISTENT"};
 constexpr absl::string_view kInconsistent{"INCONSISTENT"};
 constexpr absl::string_view kVectorFilterDelimiter{"=>"};
+constexpr absl::string_view kSlop{"SLOP"};
+constexpr absl::string_view kInorder{"INORDER"};
+constexpr absl::string_view kVerbatim{"VERBATIM"};
 
 struct LimitParameter {
   uint64_t first_index{0};
@@ -105,6 +109,9 @@ struct SearchParameters {
   bool no_content{false};
   FilterParseResults filter_parse_results;
   std::vector<ReturnAttribute> return_attributes;
+  bool inorder{false};
+  std::optional<uint32_t> slop;
+  bool verbatim{false};
   coordinator::IndexFingerprintVersion index_fingerprint_version;
   uint64_t slot_fingerprint;
   struct ParseTimeVariables {
@@ -161,14 +168,14 @@ struct SerializationRange {
 // Wrapper for search results that trims the neighbor deque based on query type
 struct SearchResult {
   size_t total_count;
-  std::deque<indexes::Neighbor> neighbors;
+  std::vector<indexes::Neighbor> neighbors;
   // True if neighbors were limited using LIMIT count with a buffer multiplier.
   bool is_limited_with_buffer;
   // True if neighbors were offset using LIMIT first_index.
   bool is_offsetted;
 
   // Constructor with automatic trimming based on query requirements
-  SearchResult(size_t total_count, std::deque<indexes::Neighbor> neighbors,
+  SearchResult(size_t total_count, std::vector<indexes::Neighbor> neighbors,
                const SearchParameters& parameters);
   // Get the range of neighbors to serialize in response.
   SerializationRange GetSerializationRange(
@@ -176,7 +183,7 @@ struct SearchResult {
 
  private:
   bool RetainAllNeighbors(const SearchParameters& parameters);
-  void TrimResults(std::deque<indexes::Neighbor>& neighbors,
+  void TrimResults(std::vector<indexes::Neighbor>& neighbors,
                    const SearchParameters& parameters);
 };
 
@@ -192,8 +199,8 @@ absl::Status SearchAsync(std::unique_ptr<SearchParameters> parameters,
                          SearchResponseCallback callback,
                          SearchMode search_mode);
 
-absl::StatusOr<std::deque<indexes::Neighbor>> MaybeAddIndexedContent(
-    absl::StatusOr<std::deque<indexes::Neighbor>> results,
+absl::StatusOr<std::vector<indexes::Neighbor>> MaybeAddIndexedContent(
+    absl::StatusOr<std::vector<indexes::Neighbor>> results,
     const SearchParameters& parameters);
 
 class Predicate;
@@ -201,17 +208,17 @@ class Predicate;
 size_t EvaluateFilterAsPrimary(
     const Predicate* predicate,
     std::queue<std::unique_ptr<indexes::EntriesFetcherBase>>& entries_fetchers,
-    bool negate);
+    bool negate, QueryOperations query_operations);
 
 // Defined in the header to support testing
-absl::StatusOr<std::deque<indexes::Neighbor>> PerformVectorSearch(
+absl::StatusOr<std::vector<indexes::Neighbor>> PerformVectorSearch(
     indexes::VectorBase* vector_index, const SearchParameters& parameters);
 
 std::priority_queue<std::pair<float, hnswlib::labeltype>>
 CalcBestMatchingPrefilteredKeys(
     const SearchParameters& parameters,
     std::queue<std::unique_ptr<indexes::EntriesFetcherBase>>& entries_fetchers,
-    indexes::VectorBase* vector_index);
+    indexes::VectorBase* vector_index, size_t qualified_entries);
 
 // Check if no results should be returned based on limit parameters
 bool ShouldReturnNoResults(const SearchParameters& parameters);
