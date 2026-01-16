@@ -207,14 +207,10 @@ void ApplySorting(std::vector<indexes::Neighbor> &neighbors,
     }
 
     auto cmp = expr::Compare(val_a, val_b);
-    switch (cmp) {
-      case expr::Ordering::kEQUAL:
-      case expr::Ordering::kUNORDERED:
-      case expr::Ordering::kGREATER:
-        return sortby.order == SortOrder::kDescending;
-      case expr::Ordering::kLESS:
-        return sortby.order == SortOrder::kAscending;
+    if (cmp == expr::Ordering::kLESS) {
+      return sortby.order == SortOrder::kAscending;
     }
+    return sortby.order == SortOrder::kDescending;
   };
 
   auto amountToKeep = parameters.limit.first_index + parameters.limit.number;
