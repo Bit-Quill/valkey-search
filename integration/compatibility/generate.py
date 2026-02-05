@@ -155,7 +155,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
         self.checkvec(self, dialect, orig_cmd, kwargs)
         self.check(self, dialect, orig_cmd)
 
-    '''        
+    '''
     def test_bad_numeric_data(self, key_type, dialect):
         self.setup_data("bad numbers", key_type)
         self.check(dialect, f"ft.search {key_type}_idx1",  "@n1:[-inf inf]")
@@ -460,3 +460,20 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
                         "as",
                         "nn",
                 )
+
+    def test_search_sortby(self, key_type, dialect):
+        self.setup_data("sortable numbers", key_type)
+
+        self.check(dialect, f"ft.search {key_type}_idx1 * sortby n1 ASC")
+        self.check(dialect, f"ft.search {key_type}_idx1 * sortby n1 DESC")
+
+        self.check(dialect, f"ft.search {key_type}_idx1 * sortby n2 ASC")
+        self.check(dialect, f"ft.search {key_type}_idx1 * sortby n2 DESC")
+
+        self.check(dialect, f"ft.search {key_type}_idx1 * sortby n1 ASC LIMIT 0 5")
+        self.check(dialect, f"ft.search {key_type}_idx1 * sortby n2 DESC LIMIT 2 3")
+
+        self.check(dialect, f"ft.search {key_type}_idx1 @n1:[0 inf] sortby n1 ASC")
+        self.check(dialect, f"ft.search {key_type}_idx1 @n1:[-inf 0] sortby n2 DESC")
+
+        self.check(dialect, f"ft.search {key_type}_idx1 * RETURN 3 @n1 @n2 @t1 sortby n1 ASC")
