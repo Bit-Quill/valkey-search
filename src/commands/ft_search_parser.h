@@ -36,7 +36,6 @@ struct SearchCommand : public QueryCommand {
   bool RequiresCompleteResults() const override { return sortby.has_value(); }
   query::SerializationRange GetSerializationRange() const;
 
-  std::optional<query::SortByParameter> sortby;
   bool with_sort_keys{false};
 };
 
