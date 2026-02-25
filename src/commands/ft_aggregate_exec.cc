@@ -189,11 +189,6 @@ absl::Status GroupBy::Execute(RecordSet& records) const {
       std::pair<std::unique_ptr<ReducerInstance>, std::vector<ArgVector>>;
   absl::flat_hash_map<GroupKey, absl::InlinedVector<InstanceArgsPair, 4>>
       groups;
-  // Store all values for each group's reducers
-  absl::flat_hash_map<
-      GroupKey,
-      absl::InlinedVector<std::vector<absl::InlinedVector<expr::Value, 4>>, 4>>
-      group_values;
   size_t record_field_count = 0;
   agg_group_by_stages.Increment();
   agg_group_by_input_records.Increment(records.size());
@@ -222,7 +217,6 @@ absl::Status GroupBy::Execute(RecordSet& records) const {
         group_it->second.emplace_back(std::move(reducer.info_->make_instance()),
                                       std::vector<ArgVector>{});
       }
-      group_values[group_it->first].resize(reducers_.size());
     }
     for (int i = 0; i < reducers_.size(); ++i) {
       ArgVector args;
