@@ -36,6 +36,11 @@ struct SearchCommand : public QueryCommand {
   bool RequiresCompleteResults() const override { return sortby.has_value(); }
   query::SerializationRange GetSerializationRange() const;
 
+  // Override to indicate that sorting requires complete results before trimming
+  bool RequiresCompleteResults() const override {
+    return sortby_parameter.has_value();
+  }
+
   bool with_sort_keys{false};
 };
 
