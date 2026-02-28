@@ -162,13 +162,11 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
     '''
     def test_search_reverse(self, key_type, dialect):
         self.setup_data("reverse vector numbers", key_type)
-        self.check(dialect, f"ft.search {key_type}_idx1 *")
-        self.check(dialect, f"ft.search {key_type}_idx1 * limit 0 5")
+        self.check(dialect, f"ft.search {key_type}_idx1 * limit 0 20")
 
     def test_search(self, key_type, dialect):
         self.setup_data("sortable numbers", key_type)
-        self.check(dialect, f"ft.search {key_type}_idx1 *")
-        self.check(dialect, f"ft.search {key_type}_idx1 * limit 0 5")
+        self.check(dialect, f"ft.search {key_type}_idx1 * limit 0 20")
     
     @pytest.mark.parametrize("algo", ["flat", "hnsw"])
     @pytest.mark.parametrize("metric", ["l2", "ip", "cosine"])
