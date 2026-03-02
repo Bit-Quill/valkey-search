@@ -458,6 +458,267 @@ def validate_aggregate_complex_queries(client: Valkey):
     assert result[1][1] == b'406'
     assert result[1][3] == b'4060'
 
+    # 17. FIRST_VALUE reducer - simple mode (no BY clause)
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 1000]",
+        "LOAD", "2", "price", "category",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "1", "@price", "AS", "first_price"
+    )
+    assert result[0] == 2
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        assert b'category' in row
+        assert b'first_price' in row
+        first_price = float(row[b'first_price'])
+        if row[b'category'] == b'electronics':
+            assert first_price == 1.0
+        else:
+            assert first_price == 2.0
+
+    # 18. FIRST_VALUE reducer - sorted ASC mode (with BY clause)
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 1000]",
+        "LOAD", "3", "price", "rating", "category",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@rating", "ASC", "AS", "price_with_min_rating"
+    )
+    assert result[0] == 2
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        assert b'category' in row
+        assert b'price_with_min_rating' in row
+        price_with_min_rating = float(row[b'price_with_min_rating'])
+        if row[b'category'] == b'electronics':
+            assert price_with_min_rating == 1.0
+        else:
+            assert price_with_min_rating == 2.0
+
+    # 19. FIRST_VALUE reducer - sorted DESC mode (with BY clause)
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 1000]",
+        "LOAD", "3", "price", "rating", "category",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@rating", "DESC", "AS", "price_with_max_rating"
+    )
+    assert result[0] == 2
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        assert b'category' in row
+        assert b'price_with_max_rating' in row
+        price_with_max_rating = float(row[b'price_with_max_rating'])
+        if row[b'category'] == b'electronics':
+            assert price_with_max_rating == 99.0
+        else:
+            assert price_with_max_rating == 100.0
+
+    # 20. FIRST_VALUE reducer - multiple groups with independent results
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 1000]",
+        "LOAD", "3", "price", "rating", "category",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "1", "@price", "AS", "first_price",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@rating", "ASC", "AS", "price_min_rating",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@rating", "DESC", "AS", "price_max_rating",
+        "REDUCE", "COUNT", "0", "AS", "count"
+    )
+    assert result[0] == 2
+    
+    electronics_found = False
+    books_found = False
+    
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        assert b'category' in row
+        assert b'first_price' in row
+        assert b'price_min_rating' in row
+        assert b'price_max_rating' in row
+        assert b'count' in row
+        
+        category = row[b'category']
+        first_price = float(row[b'first_price'])
+        price_min_rating = float(row[b'price_min_rating'])
+        price_max_rating = float(row[b'price_max_rating'])
+        count = int(row[b'count'])
+        
+        if category == b'electronics':
+            electronics_found = True
+            assert first_price == 1.0, f"Electronics first_price should be 1.0, got {first_price}"
+            assert price_min_rating == 1.0, f"Electronics price_min_rating should be 1.0, got {price_min_rating}"
+            assert price_max_rating == 99.0, f"Electronics price_max_rating should be 99.0, got {price_max_rating}"
+            assert count == 500, f"Electronics count should be 500, got {count}"
+        elif category == b'books':
+            books_found = True
+            assert first_price == 2.0, f"Books first_price should be 2.0, got {first_price}"
+            assert price_min_rating == 2.0, f"Books price_min_rating should be 2.0, got {price_min_rating}"
+            assert price_max_rating == 100.0, f"Books price_max_rating should be 100.0, got {price_max_rating}"
+            assert count == 500, f"Books count should be 500, got {count}"
+        else:
+            raise AssertionError(f"Unexpected category: {category}")
+    
+    assert electronics_found, "Electronics group not found in results"
+    assert books_found, "Books group not found in results"
+
+    # 21. FIRST_VALUE reducer - numeric and string field type handling
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 1000]",
+        "LOAD", "2", "price", "category",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@price", "ASC", "AS", "min_price"
+    )
+    assert result[0] == 2
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        min_price = float(row[b'min_price'])
+        if row[b'category'] == b'electronics':
+            assert min_price == 1.0, f"Electronics min_price should be 1.0, got {min_price}"
+        else:
+            assert min_price == 2.0, f"Books min_price should be 2.0, got {min_price}"
+    
+    client.execute_command(
+        "FT.CREATE", "products_with_text", "ON", "HASH", "PREFIX", "1", "textproduct:",
+        "SCHEMA", "name", "TEXT", "SORTABLE", "category", "TAG", "price", "NUMERIC"
+    )
+    
+    test_docs = [
+        ["HSET", "textproduct:1", "category", "fruits", "name", "Apple", "price", "1.5"],
+        ["HSET", "textproduct:2", "category", "fruits", "name", "Banana", "price", "2.0"],
+        ["HSET", "textproduct:3", "category", "fruits", "name", "Cherry", "price", "3.0"],
+        ["HSET", "textproduct:4", "category", "vegetables", "name", "Zucchini", "price", "2.5"],
+        ["HSET", "textproduct:5", "category", "vegetables", "name", "Carrot", "price", "1.0"],
+        ["HSET", "textproduct:6", "category", "vegetables", "name", "Beet", "price", "1.8"],
+    ]
+    
+    for doc in test_docs:
+        client.execute_command(*doc)
+    
+    time.sleep(0.1)
+    
+    result = client.execute_command(
+        "FT.AGGREGATE", "products_with_text", "*",
+        "LOAD", "3", "name", "price", "category",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@name", "ASC", "AS", "price_of_first_name"
+    )
+    assert result[0] == 2
+    
+    fruits_found = False
+    vegetables_found = False
+    
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        category = row[b'category']
+        price_of_first_name = float(row[b'price_of_first_name'])
+        
+        if category == b'fruits':
+            fruits_found = True
+            assert price_of_first_name == 1.5, f"Fruits price_of_first_name should be 1.5 (Apple), got {price_of_first_name}"
+        elif category == b'vegetables':
+            vegetables_found = True
+            assert price_of_first_name == 1.8, f"Vegetables price_of_first_name should be 1.8 (Beet), got {price_of_first_name}"
+        else:
+            raise AssertionError(f"Unexpected category: {category}")
+    
+    assert fruits_found, "Fruits group not found in results"
+    assert vegetables_found, "Vegetables group not found in results"
+    
+    result = client.execute_command(
+        "FT.AGGREGATE", "products_with_text", "*",
+        "LOAD", "3", "name", "price", "category",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@name", "DESC", "AS", "price_of_last_name"
+    )
+    assert result[0] == 2
+    
+    fruits_found = False
+    vegetables_found = False
+    
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        category = row[b'category']
+        price_of_last_name = float(row[b'price_of_last_name'])
+        
+        if category == b'fruits':
+            fruits_found = True
+            assert price_of_last_name == 3.0, f"Fruits price_of_last_name should be 3.0 (Cherry), got {price_of_last_name}"
+        elif category == b'vegetables':
+            vegetables_found = True
+            assert price_of_last_name == 2.5, f"Vegetables price_of_last_name should be 2.5 (Zucchini), got {price_of_last_name}"
+        else:
+            raise AssertionError(f"Unexpected category: {category}")
+    
+    assert fruits_found, "Fruits group not found in results"
+    assert vegetables_found, "Vegetables group not found in results"
+    
+    client.execute_command("FT.DROPINDEX", "products_with_text", "DD")
+
+    # 22. FIRST_VALUE reducer - error handling
+    import pytest
+    
+    with pytest.raises(ResponseError):
+        client.execute_command(
+            "FT.AGGREGATE", "products", "@price:[1 1000]",
+            "LOAD", "1", "price",
+            "GROUPBY", "1", "@category",
+            "REDUCE", "FIRST_VALUE", "0", "AS", "result"
+        )
+    
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 1000]",
+        "LOAD", "1", "price",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "2", "@price", "@rating", "AS", "result"
+    )
+    assert result[0] == 2
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        assert row[b'result'] == b''
+    
+    with pytest.raises(ResponseError):
+        client.execute_command(
+            "FT.AGGREGATE", "products", "@price:[1 1000]",
+            "LOAD", "2", "price", "rating",
+            "GROUPBY", "1", "@category",
+            "REDUCE", "FIRST_VALUE", "5", "@price", "BY", "@rating", "ASC", "extra", "AS", "result"
+        )
+    
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 1000]",
+        "LOAD", "2", "price", "rating",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "WITH", "@rating", "ASC", "AS", "result"
+    )
+    assert result[0] == 2
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        assert row[b'result'] == b''
+    
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 1000]",
+        "LOAD", "2", "price", "rating",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@rating", "UP", "AS", "result"
+    )
+    assert result[0] == 2
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        assert row[b'result'] == b''
+    
+    result = client.execute_command(
+        "FT.AGGREGATE", "products", "@price:[1 10]",
+        "LOAD", "2", "price", "rating",
+        "GROUPBY", "1", "@category",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "by", "@rating", "asc", "AS", "result_lower",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "BY", "@rating", "ASC", "AS", "result_upper",
+        "REDUCE", "FIRST_VALUE", "4", "@price", "By", "@rating", "Asc", "AS", "result_mixed"
+    )
+    assert result[0] == 2
+    for i in range(1, len(result)):
+        row = dict(zip(result[i][::2], result[i][1::2]))
+        assert row[b'result_lower'] == row[b'result_upper']
+        assert row[b'result_upper'] == row[b'result_mixed']
+        assert row[b'result_lower'] != b''
+
 class TestNonVector(ValkeySearchTestCaseBase):
 
     def test_basic(self):
