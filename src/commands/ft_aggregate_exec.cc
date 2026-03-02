@@ -293,6 +293,91 @@ class Max : public GroupBy::ReducerInstance {
   expr::Value GetResult() const override { return max_; }
 };
 
+class FirstValue : public GroupBy::ReducerInstance {
+  expr::Value result_value_;
+  expr::Value comparison_value_;
+
+  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
+    if (all_values.empty()) {
+      return;
+    }
+
+    size_t nargs = all_values[0].size();
+
+    // Simple mode: REDUCE FIRST_VALUE 1 @property
+    // Returns the first value encountered in the group
+    if (nargs == 1) {
+      result_value_ = all_values[0][0];
+      return;
+    }
+
+    // Invalid: incomplete BY clause (nargs == 2)
+    // Note: Parser validates argument count, but cannot validate keyword content.
+    // Invalid keyword arguments result in nil/empty result (ProcessRecords cannot currently propagate errors).
+    if (nargs == 2) {
+      return;
+    }
+
+    // Sorted mode: REDUCE FIRST_VALUE 3|4 @property BY @comparison [ASC|DESC]
+    // Argument layout: [0]=return_property, [1]="BY", [2]=comparison_property, [3]=order
+    
+    // Validate "BY" keyword (case-insensitive)
+    if (!all_values[0][1].IsString()) {
+      return;
+    }
+    auto by_upper = expr::FuncUpper(all_values[0][1]);
+    auto by_str = by_upper.AsStringView();
+    if (by_str != "BY") {
+      return;
+    }
+
+    // Parse sort order (default: ASC)
+    bool is_desc = false;
+    if (nargs == 4) {
+      if (!all_values[0][3].IsString()) {
+        return;
+      }
+      auto order_upper = expr::FuncUpper(all_values[0][3]);
+      auto order_str = order_upper.AsStringView();
+      
+      if (order_str == "DESC") {
+        is_desc = true;
+      } else if (order_str != "ASC") {
+        return;
+      }
+    }
+
+    // Find the record with optimal comparison value
+    for (const auto& values : all_values) {
+      expr::Value return_val = values[0];
+      expr::Value comparison_val = values[2];
+
+      // Skip records with nil comparison values
+      if (comparison_val.IsNil()) {
+        continue;
+      }
+
+      // Initialize or update based on comparison
+      if (comparison_value_.IsNil()) {
+        result_value_ = return_val;
+        comparison_value_ = comparison_val;
+      } else if (is_desc) {
+        if (comparison_val > comparison_value_) {
+          result_value_ = return_val;
+          comparison_value_ = comparison_val;
+        }
+      } else {
+        if (comparison_val < comparison_value_) {
+          result_value_ = return_val;
+          comparison_value_ = comparison_val;
+        }
+      }
+    }
+  }
+
+  expr::Value GetResult() const override { return result_value_; }
+};
+
 class Sum : public GroupBy::ReducerInstance {
   double sum_{0};
   void ProcessRecords(const std::vector<ArgVector>& all_values) override {
@@ -370,6 +455,7 @@ absl::flat_hash_map<std::string, GroupBy::ReducerInfo> GroupBy::reducerTable{
     {"COUNT", GroupBy::ReducerInfo{"COUNT", 0, 0, &MakeReducer<Count>}},
     {"COUNT_DISTINCT",
      GroupBy::ReducerInfo{"COUNT_DISTINCT", 1, 1, &MakeReducer<CountDistinct>}},
+    {"FIRST_VALUE", GroupBy::ReducerInfo{"FIRST_VALUE", 1, 4, &MakeReducer<FirstValue>}},
     {"MIN", GroupBy::ReducerInfo{"MIN", 1, 1, &MakeReducer<Min>}},
     {"MAX", GroupBy::ReducerInfo{"MAX", 1, 1, &MakeReducer<Max>}},
     {"STDDEV", GroupBy::ReducerInfo{"STDDEV", 1, 1, &MakeReducer<Stddev>}},
