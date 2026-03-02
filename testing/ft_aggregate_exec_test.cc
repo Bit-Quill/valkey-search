@@ -9,9 +9,6 @@
 #include <algorithm>
 #include <random>
 
-#include <algorithm>
-#include <random>
-
 #include "gtest/gtest.h"
 #include "src/commands/ft_aggregate_parser.h"
 #include "vmsdk/src/testing_infra/utils.h"
@@ -94,35 +91,6 @@ struct AggregateExecTest : public vmsdk::ValkeyTest {
         1);
     // params->attr_record_indexes_["n1"] = 0;
     // params->attr_record_indexes_["n2"] = 1;
-
-    auto parser = CreateAggregateParser();
-
-    auto result = parser.Parse(*params, itr);
-    EXPECT_TRUE(result.ok()) << " Status is: " << result << "\n";
-
-    // Free the allocated ValkeyModuleStrings to avoid memory leaks
-    for (auto* str : argv) {
-      ValkeyModule_FreeString(nullptr, str);
-    }
-    return params;
-  }
-
-  // Helper for FirstValue tests that need n3 attribute
-  std::unique_ptr<AggregateParameters> MakeStagesWithN3(absl::string_view test) {
-    auto argv = vmsdk::ToValkeyStringVector(test);
-    vmsdk::ArgsIterator itr(argv.data(), argv.size());
-
-    auto params = std::make_unique<AggregateParameters>(0);
-    params->parse_vars_.index_interface_ = &fakeIndex;
-    EXPECT_EQ(
-        params->AddRecordAttribute("n1", "n1", indexes::IndexerType::kNumeric),
-        0);
-    EXPECT_EQ(
-        params->AddRecordAttribute("n2", "n1", indexes::IndexerType::kNumeric),
-        1);
-    EXPECT_EQ(
-        params->AddRecordAttribute("n3", "n3", indexes::IndexerType::kNumeric),
-        2);
 
     auto parser = CreateAggregateParser();
 
