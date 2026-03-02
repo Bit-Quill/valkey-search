@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <random>
 
+#include <algorithm>
+#include <random>
+
 #include "gtest/gtest.h"
 #include "src/commands/ft_aggregate_parser.h"
 #include "vmsdk/src/testing_infra/utils.h"
@@ -70,6 +73,7 @@ struct AggregateExecTest : public vmsdk::ValkeyTest {
         {"n1", indexes::IndexerType::kNumeric},
         {"n2", indexes::IndexerType::kNumeric},
         {"n3", indexes::IndexerType::kNumeric},
+        {"n3", indexes::IndexerType::kNumeric},
     };
     vmsdk::ValkeyTest::SetUp();
   }
@@ -90,6 +94,35 @@ struct AggregateExecTest : public vmsdk::ValkeyTest {
         1);
     // params->attr_record_indexes_["n1"] = 0;
     // params->attr_record_indexes_["n2"] = 1;
+
+    auto parser = CreateAggregateParser();
+
+    auto result = parser.Parse(*params, itr);
+    EXPECT_TRUE(result.ok()) << " Status is: " << result << "\n";
+
+    // Free the allocated ValkeyModuleStrings to avoid memory leaks
+    for (auto* str : argv) {
+      ValkeyModule_FreeString(nullptr, str);
+    }
+    return params;
+  }
+
+  // Helper for FirstValue tests that need n3 attribute
+  std::unique_ptr<AggregateParameters> MakeStagesWithN3(absl::string_view test) {
+    auto argv = vmsdk::ToValkeyStringVector(test);
+    vmsdk::ArgsIterator itr(argv.data(), argv.size());
+
+    auto params = std::make_unique<AggregateParameters>(0);
+    params->parse_vars_.index_interface_ = &fakeIndex;
+    EXPECT_EQ(
+        params->AddRecordAttribute("n1", "n1", indexes::IndexerType::kNumeric),
+        0);
+    EXPECT_EQ(
+        params->AddRecordAttribute("n2", "n1", indexes::IndexerType::kNumeric),
+        1);
+    EXPECT_EQ(
+        params->AddRecordAttribute("n3", "n3", indexes::IndexerType::kNumeric),
+        2);
 
     auto parser = CreateAggregateParser();
 
@@ -598,16 +631,7 @@ TEST_F(AggregateExecTest, FirstValueReducerEdgeCasesTest) {
   }
 }
 
-// Feature: first-value-reducer, Property 1: Simple mode returns first encountered value
-// **Validates: Requirements 1.1**
-// Property: For any group of records and any return property, when FIRST_VALUE is used
-// without a BY clause, the result should equal the return property value of the first
-// record in the group.
 TEST_F(AggregateExecTest, FirstValueSimpleModePropertyTest) {
-  // This property test validates that simple mode (nargs=1) always returns the first
-  // encountered value across various group sizes and value ranges.
-  // We test with 100+ iterations using different group sizes (1-20 records) to ensure
-  // the property holds universally.
   
   struct PropertyTestCase {
     size_t group_size;
@@ -617,23 +641,16 @@ TEST_F(AggregateExecTest, FirstValueSimpleModePropertyTest) {
   
   std::vector<PropertyTestCase> test_cases;
   
-  // Generate test cases with varying group sizes (1-20 records)
-  // This simulates property-based testing by covering a wide range of inputs
   for (size_t group_size = 1; group_size <= 20; ++group_size) {
-    // For each group size, the first value is always 0 (from MakeData)
     test_cases.push_back({group_size, 0.0, 
                           "Group size " + std::to_string(group_size)});
   }
   
-  // Additional test cases with different value patterns
-  // Test with larger groups to ensure scalability
   for (size_t group_size : {25, 50, 75, 100}) {
     test_cases.push_back({group_size, 0.0,
                           "Large group size " + std::to_string(group_size)});
   }
   
-  // Add more iterations with repeated group sizes to reach 100+ iterations
-  // This simulates the randomness of property-based testing
   for (size_t i = 0; i < 20; ++i) {
     for (size_t group_size : {1, 2, 3, 5, 10, 15}) {
       test_cases.push_back({group_size, 0.0,
@@ -642,7 +659,6 @@ TEST_F(AggregateExecTest, FirstValueSimpleModePropertyTest) {
     }
   }
   
-  // Run the property test across all generated cases (100+ iterations)
   size_t iteration = 0;
   for (const auto& tc : test_cases) {
     ++iteration;
@@ -652,32 +668,26 @@ TEST_F(AggregateExecTest, FirstValueSimpleModePropertyTest) {
     auto param = MakeStages("groupby 1 @n2 reduce first_value 1 @n1");
     auto records = MakeData(tc.group_size);
     
-    // Verify we have the expected number of records
     ASSERT_EQ(records.size(), tc.group_size) 
         << "Failed to generate correct number of records";
     
-    // The first record should have n1 = 0 (from MakeData implementation)
     if (!records.empty()) {
       ASSERT_TRUE(records[0]->fields_[0].IsDouble());
       EXPECT_EQ(*(records[0]->fields_[0].AsDouble()), tc.expected_first_value)
           << "First record doesn't have expected value";
     }
     
-    // Execute the aggregation
     auto status = param->stages_[0]->Execute(records);
     ASSERT_TRUE(status.ok()) << "Execution failed: " << status;
     
-    // Verify result
     ASSERT_EQ(records.size(), 1) << "Expected exactly one result record";
     auto record = records.pop_front();
     
-    // The result should be at field index 2 (after group key fields)
     ASSERT_TRUE(record->fields_.at(2).IsDouble())
         << "Result is not a double value";
     
     double result = *(record->fields_.at(2).AsDouble());
     
-    // Property validation: result must equal the first record's value
     EXPECT_EQ(result, tc.expected_first_value)
         << "Property violated: Simple mode did not return first value. "
         << "Group size: " << tc.group_size
@@ -691,30 +701,16 @@ TEST_F(AggregateExecTest, FirstValueSimpleModePropertyTest) {
       << "Property test should run at least 100 iterations";
 }
 
-// Feature: first-value-reducer, Property 2: Sorted ASC mode returns value with minimum comparison property
-// **Validates: Requirements 2.1, 4.1**
-// Property: For any group of records with non-nil comparison properties, when FIRST_VALUE is used
-// with BY and ASC (or default order), the result should equal the return property value from the
-// record with the smallest comparison property value.
 TEST_F(AggregateExecTest, FirstValueSortedAscPropertyTest) {
-  // This property test validates that sorted ASC mode always returns the value associated with
-  // the minimum comparison property across various group sizes and value ranges.
-  // We test with 100+ iterations using different scenarios to ensure the property holds universally.
-  //
-  // Test strategy: Use GROUPBY 1 @n2 REDUCE FIRST_VALUE 4 @n1 BY @n1 ASC
-  // - All records have the same n2 value (for grouping)
-  // - Records have varying n1 values (what we return and compare)
-  // - Expected result: minimum n1 value
   
   struct PropertyTestCase {
-    std::vector<double> n1_values;  // Values for n1 field (return and comparison)
-    double expected_min;  // Expected minimum n1 value
+    std::vector<double> n1_values;
+    double expected_min;
     std::string description;
   };
   
   std::vector<PropertyTestCase> test_cases;
   
-  // Test Case Category 1: Varying group sizes (1-20 records)
   for (size_t group_size = 1; group_size <= 20; ++group_size) {
     std::vector<double> n1_values;
     double min_val = 10.0;
@@ -731,7 +727,6 @@ TEST_F(AggregateExecTest, FirstValueSortedAscPropertyTest) {
                           "Group size " + std::to_string(group_size) + " - min at start"});
   }
   
-  // Test Case Category 2: Minimum at different positions
   for (size_t min_pos : {0, 1, 2, 3, 4}) {
     std::vector<double> n1_values;
     double min_val = 5.0;
@@ -748,25 +743,18 @@ TEST_F(AggregateExecTest, FirstValueSortedAscPropertyTest) {
                           "Min at position " + std::to_string(min_pos)});
   }
   
-  // Test Case Category 3: Negative values
   test_cases.push_back({{50.0, -100.0, 0.0, 25.0}, -100.0, "Negative minimum"});
   
-  // Test Case Category 4: Close values (precision)
   test_cases.push_back({{1.001, 1.0, 1.002, 1.003}, 1.0, "Close values precision"});
   
-  // Test Case Category 5: Large range
   test_cases.push_back({{1000000.0, -1000000.0, 500000.0, 0.0}, -1000000.0, "Large range"});
   
-  // Test Case Category 6: All equal (tie-breaking)
   test_cases.push_back({{50.0, 50.0, 50.0, 50.0}, 50.0, "All equal"});
   
-  // Test Case Category 7: Multiple minimums (tie-breaking)
   test_cases.push_back({{100.0, 10.0, 50.0, 10.0}, 10.0, "Multiple minimums"});
   
-  // Test Case Category 8: Single record
   test_cases.push_back({{42.0}, 42.0, "Single record"});
   
-  // Test Case Category 9: Additional iterations to reach 100+
   for (size_t iter = 0; iter < 20; ++iter) {
     for (size_t pattern = 0; pattern < 4; ++pattern) {
       std::vector<double> n1_values;
@@ -789,7 +777,6 @@ TEST_F(AggregateExecTest, FirstValueSortedAscPropertyTest) {
     }
   }
   
-  // Run property tests (100+ iterations)
   size_t iteration = 0;
   for (const auto& tc : test_cases) {
     ++iteration;
@@ -856,20 +843,11 @@ TEST_F(AggregateExecTest, FirstValueSortedAscPropertyTest) {
       << "Property test should run at least 100 iterations";
 }
 
-// Feature: first-value-reducer, Property 3: Sorted DESC mode returns value with maximum comparison property
-// **Validates: Requirements 3.1**
-// Property: For any group of records with non-nil comparison properties, when FIRST_VALUE is used
 // with BY and DESC, the result should equal the return property value from the record with the
 // largest comparison property value.
 TEST_F(AggregateExecTest, FirstValueSortedDescPropertyTest) {
-  // This property test validates that sorted DESC mode always returns the value associated with
   // the maximum comparison property across various group sizes and value ranges.
-  // We test with 100+ iterations using different scenarios to ensure the property holds universally.
   //
-  // Test strategy: Use GROUPBY 1 @n2 REDUCE FIRST_VALUE 4 @n1 BY @n1 DESC
-  // - All records have the same n2 value (for grouping)
-  // - Records have varying n1 values (what we return and compare)
-  // - Expected result: maximum n1 value
   
   struct PropertyTestCase {
     std::vector<double> n1_values;  // Values for n1 field (return and comparison)
@@ -879,7 +857,6 @@ TEST_F(AggregateExecTest, FirstValueSortedDescPropertyTest) {
   
   std::vector<PropertyTestCase> test_cases;
   
-  // Test Case Category 1: Varying group sizes (1-20 records)
   for (size_t group_size = 1; group_size <= 20; ++group_size) {
     std::vector<double> n1_values;
     double max_val = 100.0;
@@ -896,7 +873,6 @@ TEST_F(AggregateExecTest, FirstValueSortedDescPropertyTest) {
                           "Group size " + std::to_string(group_size) + " - max at start"});
   }
   
-  // Test Case Category 2: Maximum at different positions
   for (size_t max_pos : {0, 1, 2, 3, 4}) {
     std::vector<double> n1_values;
     double max_val = 500.0;
@@ -913,31 +889,22 @@ TEST_F(AggregateExecTest, FirstValueSortedDescPropertyTest) {
                           "Max at position " + std::to_string(max_pos)});
   }
   
-  // Test Case Category 3: Negative values (maximum is least negative)
   test_cases.push_back({{-50.0, -100.0, -10.0, -25.0}, -10.0, "Negative maximum"});
   
-  // Test Case Category 4: Mixed positive and negative (maximum is positive)
   test_cases.push_back({{-50.0, 100.0, 0.0, -25.0}, 100.0, "Mixed pos/neg maximum"});
   
-  // Test Case Category 5: Close values (precision)
   test_cases.push_back({{1.001, 1.0, 1.002, 1.003}, 1.003, "Close values precision"});
   
-  // Test Case Category 6: Large range
   test_cases.push_back({{1000000.0, -1000000.0, 500000.0, 0.0}, 1000000.0, "Large range"});
   
-  // Test Case Category 7: All equal (tie-breaking)
   test_cases.push_back({{50.0, 50.0, 50.0, 50.0}, 50.0, "All equal"});
   
-  // Test Case Category 8: Multiple maximums (tie-breaking - should return first)
   test_cases.push_back({{100.0, 200.0, 50.0, 200.0}, 200.0, "Multiple maximums"});
   
-  // Test Case Category 9: Single record
   test_cases.push_back({{42.0}, 42.0, "Single record"});
   
-  // Test Case Category 10: Zero values
   test_cases.push_back({{0.0, -10.0, -5.0, -20.0}, 0.0, "Zero is maximum"});
   
-  // Test Case Category 11: Additional iterations to reach 100+
   for (size_t iter = 0; iter < 20; ++iter) {
     for (size_t pattern = 0; pattern < 4; ++pattern) {
       std::vector<double> n1_values;
@@ -960,7 +927,6 @@ TEST_F(AggregateExecTest, FirstValueSortedDescPropertyTest) {
     }
   }
   
-  // Run property tests (100+ iterations)
   size_t iteration = 0;
   for (const auto& tc : test_cases) {
     ++iteration;
@@ -970,8 +936,6 @@ TEST_F(AggregateExecTest, FirstValueSortedDescPropertyTest) {
     auto param = MakeStages("groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"DESC\"'");
     RecordSet test_records(nullptr);
     
-    // Create records using the same pattern as MakeData
-    // All records will have n2 = tc.n1_values.size() (constant for grouping)
     size_t group_key = tc.n1_values.size();
     for (double n1_val : tc.n1_values) {
       auto rec = std::make_unique<Record>(2);
@@ -999,19 +963,11 @@ TEST_F(AggregateExecTest, FirstValueSortedDescPropertyTest) {
       << "Property test should run at least 100 iterations";
 }
 
-// Feature: first-value-reducer, Property 5: Nil comparison values are skipped
-// **Validates: Requirements 2.6, 3.5, 7.3**
-// Property: For any group of records containing both nil and non-nil comparison property values,
 // when FIRST_VALUE is used with BY clause, records with nil comparison values should be excluded
 // from consideration, and the result should be determined only from records with non-nil comparison values.
 TEST_F(AggregateExecTest, FirstValueNilComparisonSkippingPropertyTest) {
-  // This property test validates that nil comparison values are correctly skipped when determining
   // the optimal value. We test with 100+ iterations using groups with mixed nil and non-nil values.
   //
-  // Test strategy: Generate groups with ~10% nil probability for comparison values
-  // - Use GROUPBY 1 @n2 REDUCE FIRST_VALUE 4 @n1 BY @n1 ASC/DESC
-  // - Mix nil and non-nil n1 values (comparison property)
-  // - Verify result is determined only from non-nil comparison values
   
   struct PropertyTestCase {
     std::vector<std::optional<double>> n1_values;  // Values for n1 (nil if nullopt)
@@ -1022,7 +978,6 @@ TEST_F(AggregateExecTest, FirstValueNilComparisonSkippingPropertyTest) {
   
   std::vector<PropertyTestCase> test_cases;
   
-  // Test Case Category 1: Single nil at different positions (ASC mode)
   for (size_t nil_pos = 0; nil_pos < 5; ++nil_pos) {
     std::vector<std::optional<double>> n1_values;
     for (size_t i = 0; i < 5; ++i) {
@@ -1046,35 +1001,30 @@ TEST_F(AggregateExecTest, FirstValueNilComparisonSkippingPropertyTest) {
                           "Single nil at position " + std::to_string(nil_pos)});
   }
   
-  // Test Case Category 2: Multiple nils scattered
   test_cases.push_back({
     {std::nullopt, 50.0, std::nullopt, 100.0, std::nullopt, 25.0},
     25.0, 100.0,
     "Multiple nils scattered"
   });
   
-  // Test Case Category 3: Nils at extremes
   test_cases.push_back({
     {std::nullopt, 50.0, 75.0, 100.0, std::nullopt},
     50.0, 100.0,
     "Nils at both ends"
   });
   
-  // Test Case Category 4: Mostly nils (only one non-nil)
   test_cases.push_back({
     {std::nullopt, std::nullopt, 42.0, std::nullopt, std::nullopt},
     42.0, 42.0,
     "Only one non-nil value"
   });
   
-  // Test Case Category 5: Mostly nils (two non-nil)
   test_cases.push_back({
     {std::nullopt, 30.0, std::nullopt, std::nullopt, 70.0},
     30.0, 70.0,
     "Two non-nil values"
   });
   
-  // Test Case Category 6: ~10% nil probability with varying group sizes
   std::srand(12345);  // Fixed seed for reproducibility
   for (size_t group_size = 3; group_size <= 15; ++group_size) {
     std::vector<std::optional<double>> n1_values;
@@ -1102,7 +1052,6 @@ TEST_F(AggregateExecTest, FirstValueNilComparisonSkippingPropertyTest) {
                           "Random ~10% nil, size " + std::to_string(group_size)});
   }
   
-  // Test Case Category 7: Additional iterations with different patterns
   for (size_t iter = 0; iter < 30; ++iter) {
     for (size_t pattern = 0; pattern < 3; ++pattern) {
       std::vector<std::optional<double>> n1_values;
@@ -1141,7 +1090,6 @@ TEST_F(AggregateExecTest, FirstValueNilComparisonSkippingPropertyTest) {
     }
   }
   
-  // Run property tests (100+ iterations)
   size_t iteration = 0;
   for (const auto& tc : test_cases) {
     ++iteration;
@@ -1230,19 +1178,10 @@ TEST_F(AggregateExecTest, FirstValueNilComparisonSkippingPropertyTest) {
       << "Property test should run at least 100 iterations";
 }
 
-// Feature: first-value-reducer, Property 6: Three-argument form defaults to ascending order
-// **Validates: Requirements 4.1, 4.3**
-// Property: For any group of records, when FIRST_VALUE is used with 3 arguments (property BY comparison),
 // the result should be identical to using 4 arguments with ASC explicitly specified.
 TEST_F(AggregateExecTest, FirstValueDefaultOrderPropertyTest) {
-  // This property test validates that the 3-argument form (without explicit order) behaves
   // identically to the 4-argument form with explicit ASC across various group sizes and value ranges.
-  // We test with 100+ iterations to ensure the property holds universally.
   //
-  // Test strategy: For each test case, run both:
-  // - REDUCE FIRST_VALUE 3 @n1 BY @n1 (3-arg form, default order)
-  // - REDUCE FIRST_VALUE 4 @n1 BY @n1 ASC (4-arg form, explicit ASC)
-  // Verify results are identical
   
   struct PropertyTestCase {
     std::vector<double> n1_values;  // Values for n1 field (return and comparison)
@@ -1252,7 +1191,6 @@ TEST_F(AggregateExecTest, FirstValueDefaultOrderPropertyTest) {
   
   std::vector<PropertyTestCase> test_cases;
   
-  // Test Case Category 1: Varying group sizes (1-20 records)
   for (size_t group_size = 1; group_size <= 20; ++group_size) {
     std::vector<double> n1_values;
     double min_val = 10.0;
@@ -1269,7 +1207,6 @@ TEST_F(AggregateExecTest, FirstValueDefaultOrderPropertyTest) {
                           "Group size " + std::to_string(group_size) + " - min at start"});
   }
   
-  // Test Case Category 2: Minimum at different positions
   for (size_t min_pos : {0, 1, 2, 3, 4}) {
     std::vector<double> n1_values;
     double min_val = 5.0;
@@ -1286,31 +1223,22 @@ TEST_F(AggregateExecTest, FirstValueDefaultOrderPropertyTest) {
                           "Min at position " + std::to_string(min_pos)});
   }
   
-  // Test Case Category 3: Negative values (minimum is most negative)
   test_cases.push_back({{-100.0, -50.0, -10.0, -25.0}, -100.0, "Negative minimum"});
   
-  // Test Case Category 4: Mixed positive and negative (minimum is negative)
   test_cases.push_back({{100.0, -50.0, 0.0, 25.0}, -50.0, "Mixed pos/neg minimum"});
   
-  // Test Case Category 5: Close values (precision)
   test_cases.push_back({{1.003, 1.001, 1.002, 1.0}, 1.0, "Close values precision"});
   
-  // Test Case Category 6: Large range
   test_cases.push_back({{1000000.0, -1000000.0, 500000.0, 0.0}, -1000000.0, "Large range"});
   
-  // Test Case Category 7: All equal (tie-breaking)
   test_cases.push_back({{50.0, 50.0, 50.0, 50.0}, 50.0, "All equal"});
   
-  // Test Case Category 8: Multiple minimums (tie-breaking - should return first)
   test_cases.push_back({{100.0, 50.0, 200.0, 50.0}, 50.0, "Multiple minimums"});
   
-  // Test Case Category 9: Single record
   test_cases.push_back({{42.0}, 42.0, "Single record"});
   
-  // Test Case Category 10: Zero values
   test_cases.push_back({{0.0, 10.0, 5.0, 20.0}, 0.0, "Zero is minimum"});
   
-  // Test Case Category 11: Additional iterations to reach 100+
   for (size_t iter = 0; iter < 20; ++iter) {
     for (size_t pattern = 0; pattern < 4; ++pattern) {
       std::vector<double> n1_values;
@@ -1333,7 +1261,6 @@ TEST_F(AggregateExecTest, FirstValueDefaultOrderPropertyTest) {
     }
   }
   
-  // Run property tests (100+ iterations)
   size_t iteration = 0;
   for (const auto& tc : test_cases) {
     ++iteration;
@@ -1408,20 +1335,12 @@ TEST_F(AggregateExecTest, FirstValueDefaultOrderPropertyTest) {
       << "Property test should run at least 100 iterations";
 }
 
-// Feature: first-value-reducer, Property 7: Tie-breaking returns first encountered value
-// **Validates: Requirements 2.2, 3.2**
-// Property: For any group of records where multiple records share the same optimal comparison value
 // (minimum for ASC, maximum for DESC), the result should be the return property value from the first
 // record encountered with that optimal comparison value.
 TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
-  // This property test validates that when multiple records have the same optimal comparison value,
   // the first encountered record's value is returned. We test with 100+ iterations using groups
   // with duplicate optimal values at different positions.
   //
-  // Test strategy: Generate groups with duplicate optimal comparison values
-  // - For ASC mode: multiple records with the minimum comparison value
-  // - For DESC mode: multiple records with the maximum comparison value
-  // - Verify result is the return property value from the FIRST record with optimal comparison value
   
   struct PropertyTestCase {
     std::vector<double> return_values;      // Values to return (n1)
@@ -1433,7 +1352,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
   
   std::vector<PropertyTestCase> test_cases;
   
-  // Test Case Category 1: Two records with same minimum at different positions
   // Minimum comparison value is 10.0, appears at positions 0 and 2
   test_cases.push_back({
     {100.0, 200.0, 300.0, 400.0},  // return values
@@ -1443,7 +1361,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "Two minimums at positions 0 and 2"
   });
   
-  // Test Case Category 2: Two records with same minimum at end positions
   test_cases.push_back({
     {100.0, 200.0, 300.0, 400.0},  // return values
     {50.0, 60.0, 10.0, 10.0},      // comparison values (min=10.0 at pos 2 and 3)
@@ -1452,7 +1369,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "Two minimums at positions 2 and 3"
   });
   
-  // Test Case Category 3: Three records with same minimum
   test_cases.push_back({
     {111.0, 222.0, 333.0, 444.0, 555.0},  // return values
     {5.0, 100.0, 5.0, 200.0, 5.0},        // comparison values (min=5.0 at pos 0, 2, 4)
@@ -1461,7 +1377,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "Three minimums at positions 0, 2, 4"
   });
   
-  // Test Case Category 4: All records have same comparison value (complete tie)
   test_cases.push_back({
     {10.0, 20.0, 30.0, 40.0},  // return values
     {50.0, 50.0, 50.0, 50.0},  // comparison values (all same)
@@ -1470,7 +1385,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "All comparison values equal"
   });
   
-  // Test Case Category 5: Two records with same maximum at different positions
   test_cases.push_back({
     {100.0, 200.0, 300.0, 400.0},  // return values
     {90.0, 50.0, 90.0, 60.0},      // comparison values (max=90.0 at pos 0 and 2)
@@ -1479,7 +1393,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "Two maximums at positions 0 and 2"
   });
   
-  // Test Case Category 6: Multiple ties with different return values
   test_cases.push_back({
     {1.0, 2.0, 3.0, 4.0, 5.0, 6.0},  // return values (all different)
     {10.0, 10.0, 10.0, 10.0, 10.0, 10.0},  // comparison values (all same)
@@ -1488,7 +1401,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "All comparison values equal, different return values"
   });
   
-  // Test Case Category 7: Tie at beginning
   test_cases.push_back({
     {77.0, 88.0, 99.0},  // return values
     {5.0, 5.0, 100.0},   // comparison values (min=5.0 at pos 0 and 1)
@@ -1497,7 +1409,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "Tie at beginning positions 0 and 1"
   });
   
-  // Test Case Category 8: Tie at end
   test_cases.push_back({
     {77.0, 88.0, 99.0},  // return values
     {100.0, 5.0, 5.0},   // comparison values (min=5.0 at pos 1 and 2)
@@ -1506,7 +1417,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "Tie at end positions 1 and 2"
   });
   
-  // Test Case Category 9: Varying group sizes with ties
   for (size_t group_size = 2; group_size <= 10; ++group_size) {
     std::vector<double> return_values;
     std::vector<double> comparison_values;
@@ -1536,7 +1446,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     });
   }
   
-  // Test Case Category 10: Ties with negative values
   test_cases.push_back({
     {-100.0, -200.0, -300.0, -400.0},  // return values (all negative)
     {-50.0, 100.0, -50.0, 200.0},      // comparison values (min=-50.0 at pos 0 and 2)
@@ -1545,7 +1454,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     "Negative return values with tie"
   });
   
-  // Test Case Category 11: Additional iterations with random patterns
   std::srand(54321);  // Fixed seed for reproducibility
   for (size_t iter = 0; iter < 25; ++iter) {
     for (size_t pattern = 0; pattern < 4; ++pattern) {
@@ -1606,7 +1514,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
     }
   }
   
-  // Run property tests (100+ iterations)
   size_t iteration = 0;
   for (const auto& tc : test_cases) {
     ++iteration;
@@ -1621,7 +1528,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
       RecordSet test_records(nullptr);
       
       // Create records with n1 = comparison value (also used as return value)
-      // n2 = constant for grouping
       double group_key = 999.0;
       for (size_t i = 0; i < tc.comparison_values.size(); ++i) {
         auto rec = std::make_unique<Record>(2);
@@ -1639,7 +1545,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
       
       double result = *(record->fields_.at(2).AsDouble());
       
-      // Find the minimum comparison value
       double expected_min = *std::min_element(tc.comparison_values.begin(), tc.comparison_values.end());
       
       EXPECT_NEAR(result, expected_min, 0.001)
@@ -1654,7 +1559,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
       RecordSet test_records(nullptr);
       
       // Create records with n1 = comparison value (also used as return value)
-      // n2 = constant for grouping
       double group_key = 999.0;
       for (size_t i = 0; i < tc.comparison_values.size(); ++i) {
         auto rec = std::make_unique<Record>(2);
@@ -1672,7 +1576,6 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
       
       double result = *(record->fields_.at(2).AsDouble());
       
-      // Find the maximum comparison value
       double expected_max = *std::max_element(tc.comparison_values.begin(), tc.comparison_values.end());
       
       EXPECT_NEAR(result, expected_max, 0.001)
@@ -1688,18 +1591,13 @@ TEST_F(AggregateExecTest, FirstValueTieBreakingPropertyTest) {
       << "Property test should run at least 100 iterations";
 }
 
-// Feature: first-value-reducer, Property 8: Nil return values are preserved
-// **Validates: Requirements 7.2**
-// Property: For any record where the return property is nil but the comparison property is valid (non-nil),
 // if that record has the optimal comparison value, the result should be nil.
 TEST_F(AggregateExecTest, FirstValueNilReturnPreservationPropertyTest) {
-  // This property test validates that nil return values are correctly preserved when a record
   // with nil return property has the optimal comparison value. We test with 100+ iterations
   // using groups where the optimal record has a nil return value.
   //
   // **Validates: Requirements 7.2**
   //
-  // Test strategy: Generate groups where the record with the optimal comparison value
   // has a nil return value, and verify that nil is preserved in the result.
 
   struct PropertyTestCase {
@@ -1716,7 +1614,6 @@ TEST_F(AggregateExecTest, FirstValueNilReturnPreservationPropertyTest) {
   std::uniform_real_distribution<double> value_dist(-1000.0, 1000.0);
   std::uniform_int_distribution<int> bool_dist(0, 1);
 
-  // Test Case Category 1: Optimal record has nil return value (70 cases)
   for (size_t i = 0; i < 70; ++i) {
     size_t group_size = size_dist(rng);
     bool is_desc = bool_dist(rng);
@@ -1769,7 +1666,6 @@ TEST_F(AggregateExecTest, FirstValueNilReturnPreservationPropertyTest) {
     });
   }
   
-  // Test Case Category 2: Nil return is NOT at the optimal position (50 cases)
   for (size_t i = 0; i < 50; ++i) {
     size_t group_size = size_dist(rng);
     if (group_size < 2) group_size = 2;  // Need at least 2 records
@@ -1827,7 +1723,6 @@ TEST_F(AggregateExecTest, FirstValueNilReturnPreservationPropertyTest) {
     });
   }
   
-  // Run property tests (100+ iterations)
   size_t iteration = 0;
   for (const auto& tc : test_cases) {
     ++iteration;
@@ -1843,22 +1738,18 @@ TEST_F(AggregateExecTest, FirstValueNilReturnPreservationPropertyTest) {
     auto param = MakeStagesWithN3(query);
     RecordSet test_records(nullptr);
     
-    // Create records with return values in n1, group key in n2, and comparison values in n3
     size_t group_key = tc.return_values.size();
     for (size_t i = 0; i < tc.return_values.size(); ++i) {
       auto rec = std::make_unique<Record>(3);
       
-      // n1 = return value (may be nil)
       if (tc.return_values[i].has_value()) {
         rec->fields_[0] = expr::Value(*tc.return_values[i]);
       } else {
         rec->fields_[0] = expr::Value();  // nil
       }
       
-      // n2 = group key (constant for all records in this group)
       rec->fields_[1] = expr::Value(double(group_key));
       
-      // n3 = comparison value (always non-nil in this test)
       rec->fields_[2] = expr::Value(tc.comparison_values[i]);
       
       test_records.emplace_back(std::move(rec));
@@ -1898,22 +1789,13 @@ TEST_F(AggregateExecTest, FirstValueNilReturnPreservationPropertyTest) {
       << "Property test should run at least 100 iterations";
 }
 
-// Feature: first-value-reducer, Property 4: Comparison works correctly for both numeric and string types
-// **Validates: Requirements 2.3, 2.4, 8.1, 8.2, 8.3, 8.4**
-// Property: For any group of records, when FIRST_VALUE is used with BY clause, the comparison should
 // produce correct ordering for both numeric values (numerical comparison) and string values (lexicographic comparison).
 TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
-  // This property test validates that FIRST_VALUE correctly handles both numeric and string types
   // with appropriate comparison semantics. We test with 100+ iterations using groups with both
   // numeric and string comparison values.
   //
   // **Validates: Requirements 2.3, 2.4, 8.1, 8.2, 8.3, 8.4**
   //
-  // Test strategy:
-  // - Generate groups with numeric comparison values and verify numerical ordering
-  // - Generate groups with string comparison values and verify lexicographic ordering
-  // - Test both ASC and DESC modes for each type
-  // - Run with minimum 100 iterations
 
   struct PropertyTestCase {
     std::string description;
@@ -1930,7 +1812,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
   std::uniform_int_distribution<int> bool_dist(0, 1);
   std::uniform_int_distribution<int> char_dist('a', 'z');
 
-  // Test Case Category 1: Numeric comparisons with varying group sizes (50 cases)
   for (size_t i = 0; i < 50; ++i) {
     size_t group_size = size_dist(rng);
     bool is_desc = bool_dist(rng);
@@ -1950,7 +1831,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
     });
   }
 
-  // Test Case Category 2: String comparisons with varying group sizes (50 cases)
   for (size_t i = 0; i < 50; ++i) {
     size_t group_size = size_dist(rng);
     bool is_desc = bool_dist(rng);
@@ -1976,7 +1856,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
     });
   }
 
-  // Test Case Category 3: Edge cases with specific numeric patterns (10 cases)
   // Negative numbers
   test_cases.push_back({
     "Numeric: negative numbers ASC",
@@ -2028,7 +1907,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
     true
   });
 
-  // Test Case Category 4: Edge cases with specific string patterns (10 cases)
   // Lexicographic ordering where "10" < "2" (string comparison)
   test_cases.push_back({
     "String: lexicographic ordering ASC (10 < 2)",
@@ -2114,7 +1992,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
     true
   });
 
-  // Run property tests (100+ iterations)
   size_t iteration = 0;
   for (const auto& tc : test_cases) {
     ++iteration;
@@ -2132,7 +2009,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
       RecordSet test_records(nullptr);
       
       // Create records with n1 = comparison value (also used as return value)
-      // n2 = constant for grouping
       double group_key = 999.0;
       for (size_t i = 0; i < tc.numeric_values.size(); ++i) {
         auto rec = std::make_unique<Record>(2);
@@ -2155,7 +2031,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
       
       double result = *(record->fields_.at(result_field_index).AsDouble());
       
-      // Verify correct ordering
       double expected;
       if (tc.is_desc) {
         expected = *std::max_element(tc.numeric_values.begin(), tc.numeric_values.end());
@@ -2188,7 +2063,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
         expected_str = sorted_strings.front();  // First in sorted order (minimum)
       }
       
-      // Find the index of the expected string in the original array
       auto it = std::find(tc.string_values.begin(), tc.string_values.end(), expected_str);
       ASSERT_NE(it, tc.string_values.end()) << "Expected string not found in original array";
       size_t expected_index = std::distance(tc.string_values.begin(), it);
@@ -2201,7 +2075,6 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
       RecordSet test_records(nullptr);
       
       // Create records with n1 = string value (both return and comparison)
-      // n2 = constant for grouping
       double group_key = 999.0;
       for (size_t i = 0; i < tc.string_values.size(); ++i) {
         auto rec = std::make_unique<Record>(2);
