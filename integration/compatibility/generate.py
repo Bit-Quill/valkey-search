@@ -466,3 +466,269 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
                         for limit in ["LIMIT 0 5", "LIMIT 2 3", ""]:
                             self.check(dialect, f"ft.search {key_type}_idx1 * SORTBY {sort_key} {direction} {return_keys} {limit} {wsk}")
 
+
+    def test_first_value_simple_mode(self, key_type, dialect):
+        """Test FIRST_VALUE without BY clause - simple mode."""
+        self.setup_data("sortable numbers", key_type)
+        
+        # Test simple mode with numeric property
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 1 @n1"
+        )
+        
+        # Test simple mode with string property
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @t1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 1 @t1"
+        )
+        
+        # Test with multiple groups
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @t1 "
+            f"groupby 1 @t1 "
+            f"reduce first_value 1 @n1"
+        )
+        
+        # Test combined with SORTBY
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 1 @n1 "
+            f"sortby 2 @n2 asc"
+        )
+        
+        # Test combined with LIMIT
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 1 @n1 "
+            f"limit 0 5"
+        )
+
+    def test_first_value_by_clause(self, key_type, dialect):
+        """Test FIRST_VALUE with BY clause - sorted mode."""
+        self.setup_data("sortable numbers", key_type)
+        
+        # Test BY clause with ASC - numeric comparison
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 ASC"
+        )
+        
+        # Test BY clause with DESC - numeric comparison
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 DESC"
+        )
+        
+        # Test BY clause with default order (3 args)
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 3 @n1 BY @n1"
+        )
+        
+        # Test BY clause with string comparison - ASC
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @t1 @t2 "
+            f"groupby 1 @t2 "
+            f"reduce first_value 4 @t1 BY @t1 ASC"
+        )
+        
+        # Test BY clause with string comparison - DESC
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @t1 @t2 "
+            f"groupby 1 @t2 "
+            f"reduce first_value 4 @t1 BY @t1 DESC"
+        )
+        
+        # Test returning different property than comparison property
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @t1 @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @t1 BY @n1 ASC"
+        )
+        
+        # Test comparing property to itself
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 ASC"
+        )
+        
+        # Test with duplicate comparison values (tie-breaking)
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n2 ASC"
+        )
+
+    def test_first_value_keyword_case(self, key_type, dialect):
+        """Test FIRST_VALUE with case-insensitive keywords."""
+        self.setup_data("sortable numbers", key_type)
+        
+        # Test lowercase 'by' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 3 @n1 by @n1"
+        )
+        
+        # Test uppercase 'BY' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 3 @n1 BY @n1"
+        )
+        
+        # Test mixed case 'By' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 3 @n1 By @n1"
+        )
+        
+        # Test lowercase 'asc' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 asc"
+        )
+        
+        # Test uppercase 'ASC' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 ASC"
+        )
+        
+        # Test mixed case 'Asc' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 Asc"
+        )
+        
+        # Test lowercase 'desc' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 desc"
+        )
+        
+        # Test uppercase 'DESC' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 DESC"
+        )
+        
+        # Test mixed case 'Desc' keyword
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 Desc"
+        )
+
+    def test_first_value_edge_cases(self, key_type, dialect):
+        """Test FIRST_VALUE with edge cases like nil values."""
+        # Use "hard numbers" data set for nil values
+        self.setup_data("hard numbers", key_type)
+        
+        # Test with nil comparison values
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 ASC"
+        )
+        
+        # Test with nil comparison values - DESC
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n1 DESC"
+        )
+        
+        # Test simple mode with nil values
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 1 @n1"
+        )
+        
+        # Switch to sortable numbers for duplicate comparison values
+        self.client.execute_command("FLUSHALL SYNC")
+        time.sleep(0.5)
+        self.setup_data("sortable numbers", key_type)
+        
+        # Test with duplicate comparison values (tie-breaking)
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n2 ASC"
+        )
+
+    def test_first_value_errors(self, key_type, dialect):
+        """Test FIRST_VALUE error conditions."""
+        self.setup_data("sortable numbers", key_type)
+        
+        # Test nargs=0 (too few arguments) - this will be caught by parser
+        # Note: This may not be testable via compatibility tests if parser rejects it
+        
+        # Test nargs=2 (incomplete BY clause)
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 2 @n1 @n2"
+        )
+        
+        # Test nargs=5 (too many arguments) - this will be caught by parser
+        # Note: This may not be testable via compatibility tests if parser rejects it
+        
+        # Test invalid BY keyword (e.g., NOTBY)
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 3 @n1 NOTBY @n2"
+        )
+        
+        # Test invalid sort order (not ASC/DESC)
+        self.check(dialect, 
+            f"ft.aggregate {key_type}_idx1 * "
+            f"load 3 @__key @n1 @n2 "
+            f"groupby 1 @n2 "
+            f"reduce first_value 4 @n1 BY @n2 INVALID"
+        )
