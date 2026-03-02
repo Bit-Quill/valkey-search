@@ -35,15 +35,15 @@ DEV_INTEGER_COUNTER(agg_stats, agg_sort_by_records);
 namespace valkey_search {
 namespace aggregate {
 
-expr::Value Attribute::GetValue(expr::Expression::EvalContext& ctx,
-                                const expr::Expression::Record& record) const {
-  auto rec = reinterpret_cast<const Record&>(record);
+expr::Value Attribute::GetValue(expr::Expression::EvalContext &ctx,
+                                const expr::Expression::Record &record) const {
+  auto rec = reinterpret_cast<const Record &>(record);
   return rec.fields_.at(record_index_);
 };
 
 expr::Expression::EvalContext ctx;
 
-std::ostream& operator<<(std::ostream& os, const RecordSet& rs) {
+std::ostream &operator<<(std::ostream &os, const RecordSet &rs) {
   os << "<RecordSet> " << rs.size() << "\n";
   for (size_t i = 0; i < rs.size(); ++i) {
     os << i << ": ";
@@ -54,8 +54,8 @@ std::ostream& operator<<(std::ostream& os, const RecordSet& rs) {
   return os;
 }
 
-void Record::Dump(std::ostream& os,
-                  const AggregateParameters* agg_params) const {
+void Record::Dump(std::ostream &os,
+                  const AggregateParameters *agg_params) const {
   os << '[';
   for (size_t i = 0; i < fields_.size(); ++i) {
     if (!fields_[i].IsNil()) {
@@ -70,14 +70,14 @@ void Record::Dump(std::ostream& os,
   }
   if (!extra_fields_.empty()) {
     os << " Extra:" << extra_fields_.size() << ' ';
-    for (const auto& [field, value] : extra_fields_) {
+    for (const auto &[field, value] : extra_fields_) {
       os << " " << field << ":" << value;
     }
   }
   os << ']';
 }
 
-absl::Status Limit::Execute(RecordSet& records) const {
+absl::Status Limit::Execute(RecordSet &records) const {
   DBG << "Executing LIMIT with offset: " << offset_ << " and limit: " << limit_
       << "\n";
   agg_limit_stages.Increment();
@@ -92,24 +92,24 @@ absl::Status Limit::Execute(RecordSet& records) const {
   return absl::OkStatus();
 }
 
-void SetField(Record& record, Attribute& dest, expr::Value value) {
+void SetField(Record &record, Attribute &dest, expr::Value value) {
   if (record.fields_.size() <= dest.record_index_) {
     record.fields_.resize(dest.record_index_ + 1);
   }
   record.fields_[dest.record_index_] = value;
 }
 
-absl::Status Apply::Execute(RecordSet& records) const {
+absl::Status Apply::Execute(RecordSet &records) const {
   DBG << "Executing APPLY with expr: " << *expr_ << "\n";
   agg_apply_stages.Increment();
   agg_apply_records.Increment(records.size());
-  for (auto& r : records) {
+  for (auto &r : records) {
     SetField(*r, *name_, expr_->Evaluate(ctx, *r));
   }
   return absl::OkStatus();
 }
 
-absl::Status Filter::Execute(RecordSet& records) const {
+absl::Status Filter::Execute(RecordSet &records) const {
   DBG << "Executing FILTER with expr: " << *expr_ << "\n";
   agg_filter_stages.Increment();
   agg_filter_input_records.Increment(records.size());
@@ -128,9 +128,9 @@ absl::Status Filter::Execute(RecordSet& records) const {
 
 template <typename T>
 struct SortFunctor {
-  const absl::InlinedVector<SortBy::SortKey, 4>* sortkeys_;
-  bool operator()(const T& l, const T& r) const {
-    for (auto& sk : *sortkeys_) {
+  const absl::InlinedVector<SortBy::SortKey, 4> *sortkeys_;
+  bool operator()(const T &l, const T &r) const {
+    for (auto &sk : *sortkeys_) {
       auto lvalue = sk.expr_->Evaluate(ctx, *l);
       auto rvalue = sk.expr_->Evaluate(ctx, *r);
       auto cmp = expr::Compare(lvalue, rvalue);
@@ -148,15 +148,15 @@ struct SortFunctor {
   }
 };
 
-absl::Status SortBy::Execute(RecordSet& records) const {
+absl::Status SortBy::Execute(RecordSet &records) const {
   DBG << "Executing SORTBY with sortkeys: " << sortkeys_.size() << "\n";
   agg_sort_by_stages.Increment();
   agg_sort_by_records.Increment(records.size());
   if (records.size() > max_) {
     // Sadly std::priority_queue can't operate on unique_ptr's. so we need an
     // extra copy
-    SortFunctor<Record*> sorter{&sortkeys_};
-    std::priority_queue<Record*, std::vector<Record*>, SortFunctor<Record*>>
+    SortFunctor<Record *> sorter{&sortkeys_};
+    std::priority_queue<Record *, std::vector<Record *>, SortFunctor<Record *>>
         heap(sorter);
     for (auto i = 0; i < max_; ++i) {
       heap.push(records.pop_front().release());
@@ -177,7 +177,7 @@ absl::Status SortBy::Execute(RecordSet& records) const {
   return absl::OkStatus();
 }
 
-absl::Status GroupBy::Execute(RecordSet& records) const {
+absl::Status GroupBy::Execute(RecordSet &records) const {
   DBG << "Executing GROUPBY with groups: " << groups_.size()
       << " and reducers: " << reducers_.size() << "\n";
 
@@ -202,16 +202,16 @@ absl::Status GroupBy::Execute(RecordSet& records) const {
     GroupKey k;
     // todo: How do we handle keys that have a missing attribute in the key??
     // Skip them?
-    for (auto& g : groups_) {
+    for (auto &g : groups_) {
       k.keys_.emplace_back(g->GetValue(ctx, *record));
     }
     DBG << "Record: " << *record << " GroupKey: " << k << "\n";
     auto [group_it, inserted] = groups.try_emplace(std::move(k));
     if (inserted) {
       DBG << "Was inserted, now have " << groups.size() << " groups\n";
-      for (auto& reducer : reducers_) {
+      for (auto &reducer : reducers_) {
         ArgVector args;
-        for (auto& nargs : reducer.args_) {
+        for (auto &nargs : reducer.args_) {
           args.emplace_back(nargs->Evaluate(ctx, *record));
         }
         group_it->second.emplace_back(std::move(reducer.info_->make_instance()),
@@ -220,13 +220,13 @@ absl::Status GroupBy::Execute(RecordSet& records) const {
     }
     for (int i = 0; i < reducers_.size(); ++i) {
       ArgVector args;
-      for (auto& nargs : reducers_[i].args_) {
+      for (auto &nargs : reducers_[i].args_) {
         args.emplace_back(nargs->Evaluate(ctx, *record));
       }
       group_it->second[i].second.push_back(args);
     }
   }
-  for (auto& group : groups) {
+  for (auto &group : groups) {
     DBG << "Making record for group " << group.first << "\n";
     RecordPtr record = std::make_unique<Record>(record_field_count);
     CHECK(groups_.size() == group.first.keys_.size());
@@ -236,7 +236,7 @@ absl::Status GroupBy::Execute(RecordSet& records) const {
     CHECK(reducers_.size() == group.second.size());
     agg_reducer_stages.Increment(reducers_.size());
     for (auto i = 0; i < reducers_.size(); ++i) {
-      auto& [instance, args] = group.second[i];
+      auto &[instance, args] = group.second[i];
       instance->ProcessRecords(args);
       SetField(*record, *reducers_[i].output_, instance->GetResult());
     }
@@ -249,7 +249,7 @@ absl::Status GroupBy::Execute(RecordSet& records) const {
 
 class Count : public GroupBy::ReducerInstance {
   size_t count_{0};
-  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
     count_ = all_values.size();
   }
   expr::Value GetResult() const override { return expr::Value(double(count_)); }
@@ -257,8 +257,8 @@ class Count : public GroupBy::ReducerInstance {
 
 class Min : public GroupBy::ReducerInstance {
   expr::Value min_;
-  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
-    for (const auto& values : all_values) {
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
+    for (const auto &values : all_values) {
       if (values[0].IsNil()) {
         continue;
       }
@@ -278,8 +278,8 @@ class Min : public GroupBy::ReducerInstance {
 
 class Max : public GroupBy::ReducerInstance {
   expr::Value max_;
-  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
-    for (const auto& values : all_values) {
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
+    for (const auto &values : all_values) {
       if (values[0].IsNil()) {
         continue;
       }
@@ -297,7 +297,7 @@ class FirstValue : public GroupBy::ReducerInstance {
   expr::Value result_value_;
   expr::Value comparison_value_;
 
-  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
     if (all_values.empty()) {
       return;
     }
@@ -312,15 +312,17 @@ class FirstValue : public GroupBy::ReducerInstance {
     }
 
     // Invalid: incomplete BY clause (nargs == 2)
-    // Note: Parser validates argument count, but cannot validate keyword content.
-    // Invalid keyword arguments result in nil/empty result (ProcessRecords cannot currently propagate errors).
+    // Note: Parser validates argument count, but cannot validate keyword
+    // content. Invalid keyword arguments result in nil/empty result
+    // (ProcessRecords cannot currently propagate errors).
     if (nargs == 2) {
       return;
     }
 
     // Sorted mode: REDUCE FIRST_VALUE 3|4 @property BY @comparison [ASC|DESC]
-    // Argument layout: [0]=return_property, [1]="BY", [2]=comparison_property, [3]=order
-    
+    // Argument layout: [0]=return_property, [1]="BY", [2]=comparison_property,
+    // [3]=order
+
     // Validate "BY" keyword (case-insensitive)
     if (!all_values[0][1].IsString()) {
       return;
@@ -339,7 +341,7 @@ class FirstValue : public GroupBy::ReducerInstance {
       }
       auto order_upper = expr::FuncUpper(all_values[0][3]);
       auto order_str = order_upper.AsStringView();
-      
+
       if (order_str == "DESC") {
         is_desc = true;
       } else if (order_str != "ASC") {
@@ -348,7 +350,7 @@ class FirstValue : public GroupBy::ReducerInstance {
     }
 
     // Find the record with optimal comparison value
-    for (const auto& values : all_values) {
+    for (const auto &values : all_values) {
       expr::Value return_val = values[0];
       expr::Value comparison_val = values[2];
 
@@ -380,8 +382,8 @@ class FirstValue : public GroupBy::ReducerInstance {
 
 class Sum : public GroupBy::ReducerInstance {
   double sum_{0};
-  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
-    for (const auto& values : all_values) {
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
+    for (const auto &values : all_values) {
       auto val = values[0].AsDouble();
       if (val) {
         sum_ += *val;
@@ -394,8 +396,8 @@ class Sum : public GroupBy::ReducerInstance {
 class Avg : public GroupBy::ReducerInstance {
   double sum_{0};
   size_t count_{0};
-  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
-    for (const auto& values : all_values) {
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
+    for (const auto &values : all_values) {
       auto val = values[0].AsDouble();
       if (val) {
         sum_ += *val;
@@ -411,8 +413,8 @@ class Avg : public GroupBy::ReducerInstance {
 class Stddev : public GroupBy::ReducerInstance {
   double sum_{0}, sq_sum_{0};
   size_t count_{0};
-  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
-    for (const auto& values : all_values) {
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
+    for (const auto &values : all_values) {
       auto val = values[0].AsDouble();
       if (val) {
         sum_ += *val;
@@ -433,8 +435,8 @@ class Stddev : public GroupBy::ReducerInstance {
 
 class CountDistinct : public GroupBy::ReducerInstance {
   absl::flat_hash_set<expr::Value> values_;
-  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
-    for (const auto& values : all_values) {
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
+    for (const auto &values : all_values) {
       if (!values[0].IsNil()) {
         values_.insert(values[0]);
       }
@@ -455,7 +457,8 @@ absl::flat_hash_map<std::string, GroupBy::ReducerInfo> GroupBy::reducerTable{
     {"COUNT", GroupBy::ReducerInfo{"COUNT", 0, 0, &MakeReducer<Count>}},
     {"COUNT_DISTINCT",
      GroupBy::ReducerInfo{"COUNT_DISTINCT", 1, 1, &MakeReducer<CountDistinct>}},
-    {"FIRST_VALUE", GroupBy::ReducerInfo{"FIRST_VALUE", 1, 4, &MakeReducer<FirstValue>}},
+    {"FIRST_VALUE",
+     GroupBy::ReducerInfo{"FIRST_VALUE", 1, 4, &MakeReducer<FirstValue>}},
     {"MIN", GroupBy::ReducerInfo{"MIN", 1, 1, &MakeReducer<Min>}},
     {"MAX", GroupBy::ReducerInfo{"MAX", 1, 1, &MakeReducer<Max>}},
     {"STDDEV", GroupBy::ReducerInfo{"STDDEV", 1, 1, &MakeReducer<Stddev>}},
