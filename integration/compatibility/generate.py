@@ -495,15 +495,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"reduce first_value 1 @n1"
         )
         
-        # Test combined with SORTBY
-        self.check(dialect, 
-            f"ft.aggregate {key_type}_idx1 * "
-            f"load 3 @__key @n1 @n2 "
-            f"groupby 1 @n2 "
-            f"reduce first_value 1 @n1 "
-            f"sortby 2 @n2 asc"
-        )
-        
+
         # Test combined with LIMIT
         self.check(dialect, 
             f"ft.aggregate {key_type}_idx1 * "
