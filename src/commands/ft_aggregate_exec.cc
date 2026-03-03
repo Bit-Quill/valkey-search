@@ -296,6 +296,7 @@ class Max : public GroupBy::ReducerInstance {
 class FirstValue : public GroupBy::ReducerInstance {
   expr::Value result_value_;
   expr::Value comparison_value_;
+  bool initialized_ = false;  // Track if we've seen any records
 
   void ProcessRecords(const std::vector<ArgVector> &all_values) override {
     if (all_values.empty()) {
@@ -354,16 +355,28 @@ class FirstValue : public GroupBy::ReducerInstance {
       expr::Value return_val = values[0];
       expr::Value comparison_val = values[2];
 
-      // Skip records with nil comparison values
+      // Initialize with first record (even if comparison is nil)
+      if (!initialized_) {
+        result_value_ = return_val;
+        comparison_value_ = comparison_val;
+        initialized_ = true;
+        continue;
+      }
+
+      // Skip subsequent records with nil comparison values
       if (comparison_val.IsNil()) {
         continue;
       }
 
-      // Initialize or update based on comparison
+      // If stored comparison is nil, replace with first non-nil
       if (comparison_value_.IsNil()) {
         result_value_ = return_val;
         comparison_value_ = comparison_val;
-      } else if (is_desc) {
+        continue;
+      }
+
+      // Update based on comparison (both values are non-nil)
+      if (is_desc) {
         if (comparison_val > comparison_value_) {
           result_value_ = return_val;
           comparison_value_ = comparison_val;
