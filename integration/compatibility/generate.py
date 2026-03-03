@@ -476,7 +476,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 1 @n1"
+            f"reduce first_value 1 @n1 as first_n1"
         )
         
         # Test simple mode with string property
@@ -484,7 +484,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @t1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 1 @t1"
+            f"reduce first_value 1 @t1 as first_t1"
         )
         
         # Test with multiple groups
@@ -492,7 +492,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @t1 "
             f"groupby 1 @t1 "
-            f"reduce first_value 1 @n1"
+            f"reduce first_value 1 @n1 as first_n1"
         )
         
 
@@ -501,7 +501,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 1 @n1 "
+            f"reduce first_value 1 @n1 as first_n1 "
             f"limit 0 5"
         )
 
@@ -514,7 +514,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 ASC"
+            f"reduce first_value 4 @n1 BY @n1 ASC as first_n1_asc"
         )
         
         # Test BY clause with DESC - numeric comparison
@@ -522,7 +522,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 DESC"
+            f"reduce first_value 4 @n1 BY @n1 DESC as first_n1_desc"
         )
         
         # Test BY clause with default order (3 args)
@@ -530,7 +530,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 3 @n1 BY @n1"
+            f"reduce first_value 3 @n1 BY @n1 as first_n1_default"
         )
         
         # Test BY clause with string comparison - ASC
@@ -538,7 +538,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @t1 @t2 "
             f"groupby 1 @t2 "
-            f"reduce first_value 4 @t1 BY @t1 ASC"
+            f"reduce first_value 4 @t1 BY @t1 ASC as first_t1_asc"
         )
         
         # Test BY clause with string comparison - DESC
@@ -546,7 +546,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @t1 @t2 "
             f"groupby 1 @t2 "
-            f"reduce first_value 4 @t1 BY @t1 DESC"
+            f"reduce first_value 4 @t1 BY @t1 DESC as first_t1_desc"
         )
         
         # Test returning different property than comparison property
@@ -554,7 +554,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @t1 @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @t1 BY @n1 ASC"
+            f"reduce first_value 4 @t1 BY @n1 ASC as first_t1_by_n1"
         )
         
         # Test comparing property to itself
@@ -562,7 +562,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 ASC"
+            f"reduce first_value 4 @n1 BY @n1 ASC as first_n1_by_n1"
         )
         
         # Test with duplicate comparison values (tie-breaking)
@@ -570,7 +570,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n2 ASC"
+            f"reduce first_value 4 @n1 BY @n2 ASC as first_n1_by_n2"
         )
 
     def test_first_value_keyword_case(self, key_type, dialect):
@@ -582,7 +582,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 3 @n1 by @n1"
+            f"reduce first_value 3 @n1 by @n1 as first_by_lower"
         )
         
         # Test uppercase 'BY' keyword
@@ -590,7 +590,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 3 @n1 BY @n1"
+            f"reduce first_value 3 @n1 BY @n1 as first_by_upper"
         )
         
         # Test mixed case 'By' keyword
@@ -598,7 +598,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 3 @n1 By @n1"
+            f"reduce first_value 3 @n1 By @n1 as first_by_mixed"
         )
         
         # Test lowercase 'asc' keyword
@@ -606,7 +606,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 asc"
+            f"reduce first_value 4 @n1 BY @n1 asc as first_asc_lower"
         )
         
         # Test uppercase 'ASC' keyword
@@ -614,7 +614,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 ASC"
+            f"reduce first_value 4 @n1 BY @n1 ASC as first_asc_upper"
         )
         
         # Test mixed case 'Asc' keyword
@@ -622,7 +622,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 Asc"
+            f"reduce first_value 4 @n1 BY @n1 Asc as first_asc_mixed"
         )
         
         # Test lowercase 'desc' keyword
@@ -630,7 +630,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 desc"
+            f"reduce first_value 4 @n1 BY @n1 desc as first_desc_lower"
         )
         
         # Test uppercase 'DESC' keyword
@@ -638,7 +638,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 DESC"
+            f"reduce first_value 4 @n1 BY @n1 DESC as first_desc_upper"
         )
         
         # Test mixed case 'Desc' keyword
@@ -646,7 +646,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 Desc"
+            f"reduce first_value 4 @n1 BY @n1 Desc as first_desc_mixed"
         )
 
     def test_first_value_edge_cases(self, key_type, dialect):
@@ -659,7 +659,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 ASC"
+            f"reduce first_value 4 @n1 BY @n1 ASC as first_nil_asc"
         )
         
         # Test with nil comparison values - DESC
@@ -667,7 +667,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n1 DESC"
+            f"reduce first_value 4 @n1 BY @n1 DESC as first_nil_desc"
         )
         
         # Test simple mode with nil values
@@ -675,7 +675,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 1 @n1"
+            f"reduce first_value 1 @n1 as first_nil_simple"
         )
         
         # Switch to sortable numbers for duplicate comparison values
@@ -688,7 +688,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n2 ASC"
+            f"reduce first_value 4 @n1 BY @n2 ASC as first_dup_tie"
         )
 
     def test_first_value_errors(self, key_type, dialect):
@@ -703,7 +703,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 2 @n1 @n2"
+            f"reduce first_value 2 @n1 @n2 as first_error_nargs2"
         )
         
         # Test nargs=5 (too many arguments) - this will be caught by parser
@@ -714,7 +714,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 3 @n1 NOTBY @n2"
+            f"reduce first_value 3 @n1 NOTBY @n2 as first_error_notby"
         )
         
         # Test invalid sort order (not ASC/DESC)
@@ -722,5 +722,6 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * "
             f"load 3 @__key @n1 @n2 "
             f"groupby 1 @n2 "
-            f"reduce first_value 4 @n1 BY @n2 INVALID"
+            f"reduce first_value 4 @n1 BY @n2 INVALID as first_error_invalid"
         )
+
