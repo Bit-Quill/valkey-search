@@ -92,3 +92,6 @@ The following reducer functions are available. The reducer functions that take a
 | MAX 1 <expression>            | The largest numerical values of the expression.                                                                                    |
 | AVG 1 <expression>            | The numerical average of the values of the expression.                                                                             |
 | STDDEV 1 <expression>         | The standard deviation the values of the expression.                                                                               |
+| FIRST_VALUE 1 <expression>                                  | The first value encountered in the group.                                                                                          |
+| FIRST_VALUE 3 <expression> BY <expression>                  | The value with the minimum comparison property (ascending order).                                                                  |
+| FIRST_VALUE 4 <expression> BY <expression> ASC&#124;DESC    | The value with the minimum (ASC) or maximum (DESC) comparison property.                                                            |
