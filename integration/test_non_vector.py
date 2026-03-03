@@ -459,6 +459,8 @@ def validate_aggregate_complex_queries(client: Valkey):
     assert result[1][3] == b'4060'
 
     # 17. FIRST_VALUE reducer - simple mode (no BY clause)
+    # Note: Simple mode is non-deterministic as it depends on retrieval order
+    # We only verify that valid values are returned, not specific values
     result = client.execute_command(
         "FT.AGGREGATE", "products", "@price:[1 1000]",
         "LOAD", "2", "price", "category",
@@ -471,10 +473,15 @@ def validate_aggregate_complex_queries(client: Valkey):
         assert b'category' in row
         assert b'first_price' in row
         first_price = float(row[b'first_price'])
+        # Verify it's a valid price from the dataset (1-1000)
+        assert 1.0 <= first_price <= 1000.0
+        # Verify category matches expected values
         if row[b'category'] == b'electronics':
-            assert first_price == 1.0
+            # Electronics has odd prices (1, 3, 5, ..., 999)
+            assert int(first_price) % 2 == 1
         else:
-            assert first_price == 2.0
+            # Books has even prices (2, 4, 6, ..., 1000)
+            assert int(first_price) % 2 == 0
 
     # 18. FIRST_VALUE reducer - sorted ASC mode (with BY clause)
     result = client.execute_command(
@@ -513,6 +520,7 @@ def validate_aggregate_complex_queries(client: Valkey):
             assert price_with_max_rating == 100.0
 
     # 20. FIRST_VALUE reducer - multiple groups with independent results
+    # Note: Simple mode (first_price) is non-deterministic
     result = client.execute_command(
         "FT.AGGREGATE", "products", "@price:[1 1000]",
         "LOAD", "3", "price", "rating", "category",
@@ -543,13 +551,19 @@ def validate_aggregate_complex_queries(client: Valkey):
         
         if category == b'electronics':
             electronics_found = True
-            assert first_price == 1.0, f"Electronics first_price should be 1.0, got {first_price}"
+            # Simple mode is non-deterministic, just verify valid range
+            assert 1.0 <= first_price <= 1000.0, f"Electronics first_price out of range: {first_price}"
+            assert int(first_price) % 2 == 1, f"Electronics should have odd prices, got {first_price}"
+            # Sorted modes are deterministic
             assert price_min_rating == 1.0, f"Electronics price_min_rating should be 1.0, got {price_min_rating}"
             assert price_max_rating == 99.0, f"Electronics price_max_rating should be 99.0, got {price_max_rating}"
             assert count == 500, f"Electronics count should be 500, got {count}"
         elif category == b'books':
             books_found = True
-            assert first_price == 2.0, f"Books first_price should be 2.0, got {first_price}"
+            # Simple mode is non-deterministic, just verify valid range
+            assert 1.0 <= first_price <= 1000.0, f"Books first_price out of range: {first_price}"
+            assert int(first_price) % 2 == 0, f"Books should have even prices, got {first_price}"
+            # Sorted modes are deterministic
             assert price_min_rating == 2.0, f"Books price_min_rating should be 2.0, got {price_min_rating}"
             assert price_max_rating == 100.0, f"Books price_max_rating should be 100.0, got {price_max_rating}"
             assert count == 500, f"Books count should be 500, got {count}"
