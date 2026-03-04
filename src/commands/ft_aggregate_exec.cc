@@ -326,11 +326,17 @@ class FirstValue : public GroupBy::ReducerInstance {
 
     // Validate "BY" keyword (case-insensitive)
     if (!all_values[0][1].IsString()) {
+      // Silent error: Returns nil when BY argument is not a string.
+      // This occurs when parser fails to recognize BY as a keyword.
+      // (ProcessRecords cannot currently propagate errors).
       return;
     }
     auto by_upper = expr::FuncUpper(all_values[0][1]);
     auto by_str = by_upper.AsStringView();
     if (by_str != "BY") {
+      // Silent error: Returns nil when BY keyword is invalid.
+      // This occurs when user provides incorrect keyword (e.g., "NOTBY").
+      // (ProcessRecords cannot currently propagate errors).
       return;
     }
 
@@ -338,6 +344,8 @@ class FirstValue : public GroupBy::ReducerInstance {
     bool is_desc = false;
     if (nargs == 4) {
       if (!all_values[0][3].IsString()) {
+        // Silent error: Returns nil when order argument is not a string.
+        // (ProcessRecords cannot currently propagate errors).
         return;
       }
       auto order_upper = expr::FuncUpper(all_values[0][3]);
@@ -346,11 +354,17 @@ class FirstValue : public GroupBy::ReducerInstance {
       if (order_str == "DESC") {
         is_desc = true;
       } else if (order_str != "ASC") {
+        // Silent error: Returns nil when order is neither ASC nor DESC.
+        // This occurs when user provides invalid order (e.g., "INVALID").
+        // (ProcessRecords cannot currently propagate errors).
         return;
       }
     }
 
-    // Find the record with optimal comparison value
+    // Find the record with optimal comparison value.
+    // Tie-breaking: When multiple records have equal comparison values,
+    // the first encountered record is returned. This depends on record
+    // retrieval order and is non-deterministic.
     for (const auto &values : all_values) {
       expr::Value return_val = values[0];
       expr::Value comparison_val = values[2];
@@ -375,7 +389,9 @@ class FirstValue : public GroupBy::ReducerInstance {
         continue;
       }
 
-      // Update based on comparison (both values are non-nil)
+      // Update based on comparison (both values are non-nil).
+      // Note: Using < and > (not <= or >=) ensures first-encountered
+      // tie-breaking behavior.
       if (is_desc) {
         if (comparison_val > comparison_value_) {
           result_value_ = return_val;
