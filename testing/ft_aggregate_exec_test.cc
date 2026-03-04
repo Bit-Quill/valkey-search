@@ -2155,6 +2155,172 @@ TEST_F(AggregateExecTest, FirstValueTypeCompatibilityPropertyTest) {
       << "Property test should run at least 100 iterations";
 }
 
+TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsBugTest) {
+  RecordSet test_records(nullptr);
+  for (int i = 0; i < 4; ++i) {
+    auto rec = std::make_unique<Record>(2);
+    rec->fields_[0] = expr::Value(double(i));
+    rec->fields_[1] = expr::Value(4.0);
+    test_records.emplace_back(std::move(rec));
+  }
+
+  {
+    auto argv = vmsdk::ToValkeyStringVector(
+        "groupby 1 @n2 reduce first_value 3 @n1 BY @n1");
+    vmsdk::ArgsIterator itr(argv.data(), argv.size());
+
+    auto params = std::make_unique<AggregateParameters>(0);
+    params->parse_vars_.index_interface_ = &fakeIndex;
+    params->AddRecordAttribute("n1", "n1", indexes::IndexerType::kNumeric);
+    params->AddRecordAttribute("n2", "n1", indexes::IndexerType::kNumeric);
+
+    auto parser = CreateAggregateParser();
+    auto parse_result = parser.Parse(*params, itr);
+
+    for (auto *str : argv) {
+      ValkeyModule_FreeString(nullptr, str);
+    }
+
+    if (!parse_result.ok()) {
+      FAIL() << "Parser failed to handle unquoted BY keyword: " << parse_result;
+      return;
+    }
+
+    RecordSet records_copy(nullptr);
+    for (const auto &rec : test_records) {
+      auto new_rec = std::make_unique<Record>(2);
+      new_rec->fields_[0] = rec->fields_[0];
+      new_rec->fields_[1] = rec->fields_[1];
+      records_copy.emplace_back(std::move(new_rec));
+    }
+
+    auto status = params->stages_[0]->Execute(records_copy);
+    ASSERT_TRUE(status.ok()) << "Execution failed: " << status;
+    ASSERT_EQ(records_copy.size(), 1) << "Expected 1 group result";
+
+    auto &result_record = records_copy[0];
+    ASSERT_GE(result_record->fields_.size(), 3)
+        << "Result should have at least 3 fields";
+
+    auto &result_value = result_record->fields_[2];
+
+    if (result_value.IsNil()) {
+      FAIL() << "FirstValue returned nil instead of 0.0 - bug confirmed";
+      return;
+    }
+
+    ASSERT_TRUE(result_value.IsDouble()) << "Result should be a double";
+
+    double result = *result_value.AsDouble();
+    EXPECT_EQ(result, 0.0)
+        << "3-arg mode with BY should return value from record with minimum "
+           "comparison value";
+  }
+
+  {
+
+    auto argv = vmsdk::ToValkeyStringVector(
+        "groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
+    vmsdk::ArgsIterator itr(argv.data(), argv.size());
+
+    auto params = std::make_unique<AggregateParameters>(0);
+    params->parse_vars_.index_interface_ = &fakeIndex;
+    params->AddRecordAttribute("n1", "n1", indexes::IndexerType::kNumeric);
+    params->AddRecordAttribute("n2", "n1", indexes::IndexerType::kNumeric);
+
+    auto parser = CreateAggregateParser();
+    auto parse_result = parser.Parse(*params, itr);
+
+    for (auto *str : argv) {
+      ValkeyModule_FreeString(nullptr, str);
+    }
+
+    if (!parse_result.ok()) {
+      FAIL() << "Parser failed to handle unquoted BY/ASC keywords: "
+             << parse_result;
+      return;
+    }
+
+    RecordSet records_copy(nullptr);
+    for (const auto &rec : test_records) {
+      auto new_rec = std::make_unique<Record>(2);
+      new_rec->fields_[0] = rec->fields_[0];
+      new_rec->fields_[1] = rec->fields_[1];
+      records_copy.emplace_back(std::move(new_rec));
+    }
+
+    auto status = params->stages_[0]->Execute(records_copy);
+    ASSERT_TRUE(status.ok()) << "Execution failed: " << status;
+    ASSERT_EQ(records_copy.size(), 1) << "Expected 1 group result";
+
+    auto &result_record = records_copy[0];
+    ASSERT_GE(result_record->fields_.size(), 3);
+
+    auto &result_value = result_record->fields_[2];
+
+    if (result_value.IsNil()) {
+      FAIL() << "FirstValue returned nil instead of 0.0 - bug confirmed";
+      return;
+    }
+
+    ASSERT_TRUE(result_value.IsDouble());
+    double result = *result_value.AsDouble();
+    EXPECT_EQ(result, 0.0);
+  }
+
+  {
+
+    auto argv = vmsdk::ToValkeyStringVector(
+        "groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
+    vmsdk::ArgsIterator itr(argv.data(), argv.size());
+
+    auto params = std::make_unique<AggregateParameters>(0);
+    params->parse_vars_.index_interface_ = &fakeIndex;
+    params->AddRecordAttribute("n1", "n1", indexes::IndexerType::kNumeric);
+    params->AddRecordAttribute("n2", "n1", indexes::IndexerType::kNumeric);
+
+    auto parser = CreateAggregateParser();
+    auto parse_result = parser.Parse(*params, itr);
+
+    for (auto *str : argv) {
+      ValkeyModule_FreeString(nullptr, str);
+    }
+
+    if (!parse_result.ok()) {
+      FAIL() << "Parser failed to handle unquoted BY/DESC keywords: "
+             << parse_result;
+      return;
+    }
+
+    RecordSet records_copy(nullptr);
+    for (const auto &rec : test_records) {
+      auto new_rec = std::make_unique<Record>(2);
+      new_rec->fields_[0] = rec->fields_[0];
+      new_rec->fields_[1] = rec->fields_[1];
+      records_copy.emplace_back(std::move(new_rec));
+    }
+
+    auto status = params->stages_[0]->Execute(records_copy);
+    ASSERT_TRUE(status.ok()) << "Execution failed: " << status;
+    ASSERT_EQ(records_copy.size(), 1) << "Expected 1 group result";
+
+    auto &result_record = records_copy[0];
+    ASSERT_GE(result_record->fields_.size(), 3);
+
+    auto &result_value = result_record->fields_[2];
+
+    if (result_value.IsNil()) {
+      FAIL() << "FirstValue returned nil instead of 3.0 - bug confirmed";
+      return;
+    }
+
+    ASSERT_TRUE(result_value.IsDouble());
+    double result = *result_value.AsDouble();
+    EXPECT_EQ(result, 3.0)
+        << "4-arg DESC mode should return value from record with maximum";
+  }
+}
+
 /*
 TEST_F(AggregateExecTest, testHash) {
   GroupKey key1({expr::Value(1.0), expr::Value(2.0)});
@@ -2171,5 +2337,815 @@ TEST_F(AggregateExecTest, testHash) {
   }));
 }
 */
+
+TEST_F(AggregateExecTest, PreservationOtherReducersPropertyTest) {
+  struct PropertyTestCase {
+    std::vector<double> n1_values;
+    size_t expected_count;
+    double expected_sum;
+    double expected_avg;
+    double expected_min;
+    double expected_max;
+    size_t expected_count_distinct;
+    double expected_stddev;
+    std::string description;
+  };
+
+  std::vector<PropertyTestCase> test_cases;
+
+  // Generate test cases with various group sizes
+  for (size_t group_size = 1; group_size <= 20; ++group_size) {
+    std::vector<double> n1_values;
+    double sum = 0.0;
+    double min_val = 0.0;
+    double max_val = static_cast<double>(group_size - 1);
+
+    for (size_t i = 0; i < group_size; ++i) {
+      double val = static_cast<double>(i);
+      n1_values.push_back(val);
+      sum += val;
+    }
+
+    double avg = sum / group_size;
+
+    // Calculate sample standard deviation (divides by N-1, not N)
+    double variance = 0.0;
+    for (double val : n1_values) {
+      variance += (val - avg) * (val - avg);
+    }
+    if (group_size > 1) {
+      variance /= (group_size - 1);  // Sample variance uses N-1
+    }
+    double stddev = std::sqrt(variance);
+
+    test_cases.push_back({n1_values, group_size, sum, avg, min_val, max_val,
+                          group_size, stddev,
+                          "Sequential values, size " +
+                              std::to_string(group_size)});
+  }
+
+  // Test with negative values
+  test_cases.push_back({{-10.0, -5.0, -20.0, -1.0},
+                        4,
+                        -36.0,
+                        -9.0,
+                        -20.0,
+                        -1.0,
+                        4,
+                        8.2056890833941143,  // Sample stddev: sqrt(202/3)
+                        "Negative values"});
+
+  // Test with mixed positive and negative
+  test_cases.push_back({{-10.0, 5.0, 0.0, 10.0, -5.0},
+                        5,
+                        0.0,
+                        0.0,
+                        -10.0,
+                        10.0,
+                        5,
+                        7.9056941504209488,  // Sample stddev: sqrt(250/4)
+                        "Mixed positive/negative"});
+
+  // Test with duplicate values
+  test_cases.push_back({{5.0, 5.0, 5.0, 5.0},
+                        4,
+                        20.0,
+                        5.0,
+                        5.0,
+                        5.0,
+                        1,
+                        0.0,
+                        "All same values"});
+
+  // Test with some duplicates
+  test_cases.push_back({{1.0, 2.0, 2.0, 3.0, 3.0, 3.0},
+                        6,
+                        14.0,
+                        2.333333,
+                        1.0,
+                        3.0,
+                        3,
+                        0.8164965809277260,  // Sample stddev
+                        "Some duplicate values"});
+
+  // Test with large values
+  test_cases.push_back({{1000.0, 2000.0, 3000.0, 4000.0},
+                        4,
+                        10000.0,
+                        2500.0,
+                        1000.0,
+                        4000.0,
+                        4,
+                        1290.9944487358056,  // Sample stddev
+                        "Large values"});
+
+  // Test with small differences
+  test_cases.push_back({{1.001, 1.002, 1.003, 1.004},
+                        4,
+                        4.01,
+                        1.0025,
+                        1.001,
+                        1.004,
+                        4,
+                        0.0012909944487358056,  // Sample stddev
+                        "Small differences"});
+
+  // Random test cases
+  std::mt19937 rng(42);
+  std::uniform_real_distribution<double> value_dist(-100.0, 100.0);
+
+  for (size_t iter = 0; iter < 30; ++iter) {
+    size_t group_size = 3 + (iter % 10);
+    std::vector<double> n1_values;
+    std::set<double> unique_values;
+    double sum = 0.0;
+    double min_val = std::numeric_limits<double>::max();
+    double max_val = std::numeric_limits<double>::lowest();
+
+    for (size_t i = 0; i < group_size; ++i) {
+      double val = value_dist(rng);
+      n1_values.push_back(val);
+      unique_values.insert(val);
+      sum += val;
+      min_val = std::min(min_val, val);
+      max_val = std::max(max_val, val);
+    }
+
+    double avg = sum / group_size;
+    double variance = 0.0;
+    for (double val : n1_values) {
+      variance += (val - avg) * (val - avg);
+    }
+    if (group_size > 1) {
+      variance /= (group_size - 1);  // Sample variance uses N-1
+    }
+    double stddev = std::sqrt(variance);
+
+    test_cases.push_back({n1_values, group_size, sum, avg, min_val, max_val,
+                          unique_values.size(), stddev,
+                          "Random iteration " + std::to_string(iter)});
+  }
+
+  size_t iteration = 0;
+  for (const auto &tc : test_cases) {
+    ++iteration;
+
+    std::string query =
+        "groupby 1 @n2 "
+        "reduce count 0 "
+        "reduce sum 1 @n1 "
+        "reduce avg 1 @n1 "
+        "reduce min 1 @n1 "
+        "reduce max 1 @n1 "
+        "reduce count_distinct 1 @n1 "
+        "reduce stddev 1 @n1";
+
+    auto param = MakeStages(query);
+    RecordSet test_records(nullptr);
+
+    // Create records
+    size_t group_key = tc.n1_values.size();
+    for (double n1_val : tc.n1_values) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(n1_val);
+      rec->fields_[1] = expr::Value(double(group_key));
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    ASSERT_TRUE(status.ok()) << "Execution failed: " << status;
+    ASSERT_EQ(test_records.size(), 1) << "Expected one grouped record";
+
+    auto record = test_records.pop_front();
+
+    // Field layout: [0: Nil (n1), 1: group key (@n2), 2-8: reducer results]
+    // Results: count, sum, avg, min, max, count_distinct, stddev
+    ASSERT_GE(record->fields_.size(), 9)
+        << "Expected at least 9 fields in result";
+
+    // Validate COUNT
+    ASSERT_TRUE(record->fields_[2].IsDouble()) << "COUNT result not a double";
+    EXPECT_NEAR(*record->fields_[2].AsDouble(), tc.expected_count, 0.001)
+        << "COUNT mismatch in " << tc.description;
+
+    // Validate SUM
+    ASSERT_TRUE(record->fields_[3].IsDouble()) << "SUM result not a double";
+    EXPECT_NEAR(*record->fields_[3].AsDouble(), tc.expected_sum, 0.001)
+        << "SUM mismatch in " << tc.description;
+
+    // Validate AVG
+    ASSERT_TRUE(record->fields_[4].IsDouble()) << "AVG result not a double";
+    EXPECT_NEAR(*record->fields_[4].AsDouble(), tc.expected_avg, 0.001)
+        << "AVG mismatch in " << tc.description;
+
+    // Validate MIN
+    ASSERT_TRUE(record->fields_[5].IsDouble()) << "MIN result not a double";
+    EXPECT_NEAR(*record->fields_[5].AsDouble(), tc.expected_min, 0.001)
+        << "MIN mismatch in " << tc.description;
+
+    // Validate MAX
+    ASSERT_TRUE(record->fields_[6].IsDouble()) << "MAX result not a double";
+    EXPECT_NEAR(*record->fields_[6].AsDouble(), tc.expected_max, 0.001)
+        << "MAX mismatch in " << tc.description;
+
+    // Validate COUNT_DISTINCT
+    ASSERT_TRUE(record->fields_[7].IsDouble())
+        << "COUNT_DISTINCT result not a double";
+    EXPECT_NEAR(*record->fields_[7].AsDouble(), tc.expected_count_distinct,
+                0.001)
+        << "COUNT_DISTINCT mismatch in " << tc.description;
+
+    // Validate STDDEV
+    ASSERT_TRUE(record->fields_[8].IsDouble()) << "STDDEV result not a double";
+    EXPECT_NEAR(*record->fields_[8].AsDouble(), tc.expected_stddev, 0.001)
+        << "STDDEV mismatch in " << tc.description;
+  }
+
+  EXPECT_GE(iteration, 50)
+      << "Preservation test should run at least 50 iterations";
+}
+
+TEST_F(AggregateExecTest,
+       PreservationFirstValueSimpleModeWithOperationsPropertyTest) {
+  struct PropertyTestCase {
+    std::string operation;
+    size_t input_size;
+    size_t expected_output_size;
+    std::vector<double> expected_first_values;
+    std::string description;
+  };
+
+  std::vector<PropertyTestCase> test_cases;
+
+  // Test FIRST_VALUE with FILTER
+  test_cases.push_back({"FILTER @n1>1 groupby 1 @n2 reduce first_value 1 @n1",
+                        5,
+                        1,
+                        {2.0},
+                        "FIRST_VALUE with FILTER"});
+
+  // Test FIRST_VALUE with LIMIT
+  test_cases.push_back(
+      {"groupby 1 @n2 reduce first_value 1 @n1 LIMIT 0 1",
+       5,
+       1,
+       {0.0},
+       "FIRST_VALUE with LIMIT"});
+
+  // Test FIRST_VALUE with SORTBY before grouping
+  test_cases.push_back(
+      {"SORTBY 2 @n1 DESC groupby 1 @n2 reduce first_value 1 @n1",
+       5,
+       1,
+       {4.0},
+       "FIRST_VALUE with SORTBY DESC"});
+
+  // Test FIRST_VALUE with APPLY
+  test_cases.push_back(
+      {"APPLY @n1*2 as n3 groupby 1 @n2 reduce first_value 1 @n3",
+       5,
+       1,
+       {0.0},
+       "FIRST_VALUE with APPLY"});
+
+  // Test FIRST_VALUE with multiple operations
+  test_cases.push_back(
+      {"FILTER @n1>=1 SORTBY 2 @n1 ASC groupby 1 @n2 reduce first_value 1 @n1",
+       5,
+       1,
+       {1.0},
+       "FIRST_VALUE with FILTER and SORTBY"});
+
+  // Random test cases with various combinations
+  std::mt19937 rng(12345);
+  std::uniform_int_distribution<size_t> size_dist(3, 15);
+
+  for (size_t iter = 0; iter < 20; ++iter) {
+    size_t input_size = size_dist(rng);
+
+    // Test with FILTER
+    {
+      double filter_threshold = static_cast<double>(input_size / 3);
+      std::string query = "FILTER @n1>" + std::to_string(filter_threshold) +
+                          " groupby 1 @n2 reduce first_value 1 @n1";
+      double expected_first = filter_threshold + 1.0;
+      test_cases.push_back({query, input_size, 1, {expected_first},
+                            "Random iter " + std::to_string(iter) +
+                                " with FILTER"});
+    }
+
+    // Test with SORTBY
+    {
+      std::string query =
+          "SORTBY 2 @n1 DESC groupby 1 @n2 reduce first_value 1 @n1";
+      double expected_first = static_cast<double>(input_size - 1);
+      test_cases.push_back({query, input_size, 1, {expected_first},
+                            "Random iter " + std::to_string(iter) +
+                                " with SORTBY"});
+    }
+  }
+
+  size_t iteration = 0;
+  for (const auto &tc : test_cases) {
+    ++iteration;
+
+    auto param = MakeStages(tc.operation);
+    RecordSet test_records(nullptr);
+
+    // Create records with n1 = [0, 1, 2, ..., input_size-1]
+    for (size_t i = 0; i < tc.input_size; ++i) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(static_cast<double>(i));
+      rec->fields_[1] = expr::Value(static_cast<double>(tc.input_size));
+      test_records.emplace_back(std::move(rec));
+    }
+
+    // Execute all stages
+    for (auto &stage : param->stages_) {
+      auto status = stage->Execute(test_records);
+      ASSERT_TRUE(status.ok()) << "Execution failed: " << status << " in "
+                               << tc.description;
+    }
+
+    ASSERT_EQ(test_records.size(), tc.expected_output_size)
+        << "Output size mismatch in " << tc.description;
+
+    if (!test_records.empty() && !tc.expected_first_values.empty()) {
+      auto record = test_records.pop_front();
+
+      // Find the FIRST_VALUE result field
+      // For groupby operations, the result is typically at field index 2
+      size_t result_field_index = 2;
+      if (record->fields_.size() > result_field_index) {
+        if (record->fields_[result_field_index].IsDouble()) {
+          double result = *record->fields_[result_field_index].AsDouble();
+          EXPECT_NEAR(result, tc.expected_first_values[0], 0.001)
+              << "FIRST_VALUE result mismatch in " << tc.description;
+        }
+      }
+    }
+  }
+
+  EXPECT_GE(iteration, 25)
+      << "Preservation test should run at least 25 iterations";
+}
+
+TEST_F(AggregateExecTest, PreservationFirstValueSimpleModeBaselinePropertyTest) {
+  struct PropertyTestCase {
+    std::vector<double> n1_values;
+    double expected_first_value;
+    std::string description;
+  };
+
+  std::vector<PropertyTestCase> test_cases;
+
+  // Basic test cases
+  for (size_t group_size = 1; group_size <= 20; ++group_size) {
+    std::vector<double> n1_values;
+    for (size_t i = 0; i < group_size; ++i) {
+      n1_values.push_back(static_cast<double>(i));
+    }
+    test_cases.push_back(
+        {n1_values, 0.0, "Sequential values, size " + std::to_string(group_size)});
+  }
+
+  // Test with negative first value
+  test_cases.push_back(
+      {{-10.0, 5.0, 0.0, 10.0}, -10.0, "Negative first value"});
+
+  // Test with positive first value
+  test_cases.push_back({{100.0, 50.0, 75.0, 25.0}, 100.0, "Positive first value"});
+
+  // Test with zero first value
+  test_cases.push_back({{0.0, 10.0, 20.0, 30.0}, 0.0, "Zero first value"});
+
+  // Test with large first value
+  test_cases.push_back(
+      {{1000000.0, 1.0, 2.0, 3.0}, 1000000.0, "Large first value"});
+
+  // Test with small first value
+  test_cases.push_back(
+      {{0.001, 100.0, 200.0, 300.0}, 0.001, "Small first value"});
+
+  // Test with duplicate values
+  test_cases.push_back(
+      {{5.0, 5.0, 5.0, 5.0}, 5.0, "All same values"});
+
+  // Random test cases
+  std::mt19937 rng(54321);
+  std::uniform_real_distribution<double> value_dist(-1000.0, 1000.0);
+  std::uniform_int_distribution<size_t> size_dist(2, 20);
+
+  for (size_t iter = 0; iter < 50; ++iter) {
+    size_t group_size = size_dist(rng);
+    std::vector<double> n1_values;
+    double first_value = value_dist(rng);
+
+    n1_values.push_back(first_value);
+    for (size_t i = 1; i < group_size; ++i) {
+      n1_values.push_back(value_dist(rng));
+    }
+
+    test_cases.push_back({n1_values, first_value,
+                          "Random iteration " + std::to_string(iter)});
+  }
+
+  size_t iteration = 0;
+  for (const auto &tc : test_cases) {
+    ++iteration;
+
+    auto param = MakeStages("groupby 1 @n2 reduce first_value 1 @n1");
+    RecordSet test_records(nullptr);
+
+    // Create records
+    size_t group_key = tc.n1_values.size();
+    for (double n1_val : tc.n1_values) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(n1_val);
+      rec->fields_[1] = expr::Value(double(group_key));
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    ASSERT_TRUE(status.ok()) << "Execution failed: " << status;
+    ASSERT_EQ(test_records.size(), 1) << "Expected one grouped record";
+
+    auto record = test_records.pop_front();
+
+    // Field layout: [0: Nil (n1), 1: group key (@n2), 2: first_value result]
+    ASSERT_GE(record->fields_.size(), 3) << "Expected at least 3 fields";
+    ASSERT_TRUE(record->fields_[2].IsDouble())
+        << "FIRST_VALUE result not a double";
+
+    double result = *record->fields_[2].AsDouble();
+    EXPECT_NEAR(result, tc.expected_first_value, 0.001)
+        << "Property violated: FIRST_VALUE simple mode should return first "
+           "encountered value. "
+        << "Expected " << tc.expected_first_value << ", got " << result
+        << " in " << tc.description;
+  }
+
+  EXPECT_GE(iteration, 70)
+      << "Preservation test should run at least 70 iterations";
+}
+
+TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsTest) {
+  struct Testcase {
+    std::string text_;
+    size_t m;
+    std::vector<double> values_;
+    bool should_succeed;
+    std::string description_;
+  };
+
+  Testcase testcases[]{
+      // 3-arg mode with unquoted BY (default ASC order)
+      {"groupby 1 @n2 reduce first_value 3 @n1 BY @n1", 4, {0}, true,
+       "3-arg mode with unquoted BY"},
+
+      // 4-arg mode with unquoted BY and ASC
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC", 4, {0}, true,
+       "4-arg mode with unquoted BY and ASC"},
+
+      // 4-arg mode with unquoted BY and DESC
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC", 4, {3}, true,
+       "4-arg mode with unquoted BY and DESC"},
+
+      // Case-insensitivity tests for BY keyword
+      {"groupby 1 @n2 reduce first_value 3 @n1 by @n1", 4, {0}, true,
+       "3-arg mode with lowercase 'by'"},
+      {"groupby 1 @n2 reduce first_value 3 @n1 By @n1", 4, {0}, true,
+       "3-arg mode with mixed case 'By'"},
+
+      // Case-insensitivity tests for ASC keyword
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 asc", 4, {0}, true,
+       "4-arg mode with lowercase 'asc'"},
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 Asc", 4, {0}, true,
+       "4-arg mode with mixed case 'Asc'"},
+
+      // Case-insensitivity tests for DESC keyword
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 desc", 4, {3}, true,
+       "4-arg mode with lowercase 'desc'"},
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 Desc", 4, {3}, true,
+       "4-arg mode with mixed case 'Desc'"},
+
+      // Mixed case combinations
+      {"groupby 1 @n2 reduce first_value 3 @n1 by @n1", 4, {0}, true,
+       "3-arg with lowercase by"},
+      {"groupby 1 @n2 reduce first_value 4 @n1 by @n1 asc", 4, {0}, true,
+       "4-arg with lowercase by and asc"},
+      {"groupby 1 @n2 reduce first_value 4 @n1 by @n1 desc", 4, {3}, true,
+       "4-arg with lowercase by and desc"},
+      {"groupby 1 @n2 reduce first_value 4 @n1 By @n1 Asc", 4, {0}, true,
+       "4-arg with mixed case By and Asc"},
+      {"groupby 1 @n2 reduce first_value 4 @n1 By @n1 Desc", 4, {3}, true,
+       "4-arg with mixed case By and Desc"},
+  };
+
+  for (auto &tc : testcases) {
+    auto param = MakeStages(tc.text_);
+    auto records = MakeData(tc.m);
+    for (auto &r : records) {
+    }
+
+    auto status = param->stages_[0]->Execute(records);
+
+    if (tc.should_succeed) {
+      EXPECT_TRUE(status.ok()) << "Expected success but got: " << status
+                               << " for " << tc.description_;
+      EXPECT_EQ(records.size(), 1) << "Expected 1 group for " << tc.description_;
+      auto record = records.pop_front();
+      for (auto i = 0; i < tc.values_.size(); ++i) {
+        EXPECT_TRUE(record->fields_.at(i + 2).IsDouble())
+            << "Result not a double for " << tc.description_;
+        EXPECT_NEAR(*(record->fields_.at(i + 2).AsDouble()), tc.values_[i],
+                    .001)
+            << "Value mismatch for " << tc.description_;
+      }
+    } else {
+      if (status.ok() && records.size() == 1) {
+        auto record = records.pop_front();
+        EXPECT_TRUE(record->fields_.at(2).IsNil())
+            << "Expected nil result for invalid arguments in "
+            << tc.description_;
+      }
+    }
+  }
+}
+
+TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsEdgeCasesTest) {
+
+  // Edge Case 1: Single record
+  {
+    auto param = MakeStages("groupby 1 @n2 reduce first_value 3 @n1 BY @n1");
+    RecordSet test_records(nullptr);
+
+    auto rec = std::make_unique<Record>(2);
+    rec->fields_[0] = expr::Value(42.0);
+    rec->fields_[1] = expr::Value(1.0);
+    test_records.emplace_back(std::move(rec));
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsDouble());
+    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), 42.0, 0.001);
+  }
+
+  // Edge Case 2: All same comparison values with unquoted BY ASC
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
+    RecordSet test_records(nullptr);
+
+    for (int i = 0; i < 4; ++i) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(10.0);  // All same comparison value
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsDouble());
+    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), 10.0, 0.001)
+        << "Should return first encountered value when all are equal";
+  }
+
+  // Edge Case 3: Nil comparison values with unquoted BY
+  {
+    auto param = MakeStages("groupby 1 @n2 reduce first_value 3 @n1 BY @n1");
+    RecordSet test_records(nullptr);
+
+    for (int i = 0; i < 4; ++i) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value();  // Nil value
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsNil())
+        << "Should return nil when all comparison values are nil";
+  }
+
+  // Edge Case 4: Mixed nil and non-nil with unquoted BY ASC
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
+    RecordSet test_records(nullptr);
+
+    // Add records: nil, 50.0, nil, 100.0
+    auto rec1 = std::make_unique<Record>(2);
+    rec1->fields_[0] = expr::Value();  // Nil
+    rec1->fields_[1] = expr::Value(1.0);
+    test_records.emplace_back(std::move(rec1));
+
+    auto rec2 = std::make_unique<Record>(2);
+    rec2->fields_[0] = expr::Value(50.0);
+    rec2->fields_[1] = expr::Value(1.0);
+    test_records.emplace_back(std::move(rec2));
+
+    auto rec3 = std::make_unique<Record>(2);
+    rec3->fields_[0] = expr::Value();  // Nil
+    rec3->fields_[1] = expr::Value(1.0);
+    test_records.emplace_back(std::move(rec3));
+
+    auto rec4 = std::make_unique<Record>(2);
+    rec4->fields_[0] = expr::Value(100.0);
+    rec4->fields_[1] = expr::Value(1.0);
+    test_records.emplace_back(std::move(rec4));
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsDouble());
+    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), 50.0, 0.001)
+        << "Should skip nil values and return minimum non-nil";
+  }
+
+  // Edge Case 5: Negative numbers with unquoted BY ASC
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
+    RecordSet test_records(nullptr);
+
+    std::vector<double> values = {-100.0, -50.0, -200.0, -10.0};
+    for (double val : values) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(val);
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsDouble());
+    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), -200.0, 0.001)
+        << "Should return minimum (most negative) value";
+  }
+
+  // Edge Case 6: Large value range with unquoted BY DESC
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
+    RecordSet test_records(nullptr);
+
+    std::vector<double> values = {1000000.0, -1000000.0, 500000.0, 0.0};
+    for (double val : values) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(val);
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsDouble());
+    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), 1000000.0, 0.001)
+        << "Should handle large value ranges correctly";
+  }
+}
+
+TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsStringComparisonTest) {
+
+  // String comparison with unquoted BY ASC
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
+    RecordSet test_records(nullptr);
+
+    std::vector<std::string> strings = {"zebra", "apple", "mango", "banana"};
+    for (const auto &str : strings) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(str);
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsString());
+    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "apple")
+        << "Should return lexicographically smallest string";
+  }
+
+  // String comparison with unquoted BY DESC
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
+    RecordSet test_records(nullptr);
+
+    std::vector<std::string> strings = {"zebra", "apple", "mango", "banana"};
+    for (const auto &str : strings) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(str);
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsString());
+    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "zebra")
+        << "Should return lexicographically largest string";
+  }
+
+  // String comparison with unquoted by (lowercase)
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 3 @n1 by @n1");
+    RecordSet test_records(nullptr);
+
+    std::vector<std::string> strings = {"dog", "cat", "bird", "ant"};
+    for (const auto &str : strings) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(str);
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsString());
+    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "ant")
+        << "Should return lexicographically smallest string (default ASC)";
+  }
+
+  // Lexicographic ordering where "10" < "2" (string comparison)
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
+    RecordSet test_records(nullptr);
+
+    std::vector<std::string> strings = {"10", "2", "20", "3"};
+    for (const auto &str : strings) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(str);
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsString());
+    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "10")
+        << "Lexicographic: '10' < '2' in string comparison";
+  }
+
+  // Lexicographic ordering DESC
+  {
+    auto param =
+        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
+    RecordSet test_records(nullptr);
+
+    std::vector<std::string> strings = {"10", "2", "20", "3"};
+    for (const auto &str : strings) {
+      auto rec = std::make_unique<Record>(2);
+      rec->fields_[0] = expr::Value(str);
+      rec->fields_[1] = expr::Value(1.0);
+      test_records.emplace_back(std::move(rec));
+    }
+
+    auto status = param->stages_[0]->Execute(test_records);
+    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
+    EXPECT_EQ(test_records.size(), 1);
+
+    auto record = test_records.pop_front();
+    EXPECT_TRUE(record->fields_.at(2).IsString());
+    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "3")
+        << "Lexicographic: '3' > '20' in string comparison";
+  }
+}
+
 }  // namespace aggregate
 }  // namespace valkey_search
