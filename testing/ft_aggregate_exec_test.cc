@@ -2218,7 +2218,6 @@ TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsBugTest) {
   }
 
   {
-
     auto argv = vmsdk::ToValkeyStringVector(
         "groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
     vmsdk::ArgsIterator itr(argv.data(), argv.size());
@@ -2269,7 +2268,6 @@ TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsBugTest) {
   }
 
   {
-
     auto argv = vmsdk::ToValkeyStringVector(
         "groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
     vmsdk::ArgsIterator itr(argv.data(), argv.size());
@@ -2378,10 +2376,9 @@ TEST_F(AggregateExecTest, PreservationOtherReducersPropertyTest) {
     }
     double stddev = std::sqrt(variance);
 
-    test_cases.push_back({n1_values, group_size, sum, avg, min_val, max_val,
-                          group_size, stddev,
-                          "Sequential values, size " +
-                              std::to_string(group_size)});
+    test_cases.push_back(
+        {n1_values, group_size, sum, avg, min_val, max_val, group_size, stddev,
+         "Sequential values, size " + std::to_string(group_size)});
   }
 
   // Test with negative values
@@ -2585,12 +2582,11 @@ TEST_F(AggregateExecTest,
                         "FIRST_VALUE with FILTER"});
 
   // Test FIRST_VALUE with LIMIT
-  test_cases.push_back(
-      {"groupby 1 @n2 reduce first_value 1 @n1 LIMIT 0 1",
-       5,
-       1,
-       {0.0},
-       "FIRST_VALUE with LIMIT"});
+  test_cases.push_back({"groupby 1 @n2 reduce first_value 1 @n1 LIMIT 0 1",
+                        5,
+                        1,
+                        {0.0},
+                        "FIRST_VALUE with LIMIT"});
 
   // Test FIRST_VALUE with SORTBY before grouping
   test_cases.push_back(
@@ -2629,9 +2625,12 @@ TEST_F(AggregateExecTest,
       std::string query = "FILTER @n1>" + std::to_string(filter_threshold) +
                           " groupby 1 @n2 reduce first_value 1 @n1";
       double expected_first = filter_threshold + 1.0;
-      test_cases.push_back({query, input_size, 1, {expected_first},
-                            "Random iter " + std::to_string(iter) +
-                                " with FILTER"});
+      test_cases.push_back(
+          {query,
+           input_size,
+           1,
+           {expected_first},
+           "Random iter " + std::to_string(iter) + " with FILTER"});
     }
 
     // Test with SORTBY
@@ -2639,9 +2638,12 @@ TEST_F(AggregateExecTest,
       std::string query =
           "SORTBY 2 @n1 DESC groupby 1 @n2 reduce first_value 1 @n1";
       double expected_first = static_cast<double>(input_size - 1);
-      test_cases.push_back({query, input_size, 1, {expected_first},
-                            "Random iter " + std::to_string(iter) +
-                                " with SORTBY"});
+      test_cases.push_back(
+          {query,
+           input_size,
+           1,
+           {expected_first},
+           "Random iter " + std::to_string(iter) + " with SORTBY"});
     }
   }
 
@@ -2663,8 +2665,8 @@ TEST_F(AggregateExecTest,
     // Execute all stages
     for (auto &stage : param->stages_) {
       auto status = stage->Execute(test_records);
-      ASSERT_TRUE(status.ok()) << "Execution failed: " << status << " in "
-                               << tc.description;
+      ASSERT_TRUE(status.ok())
+          << "Execution failed: " << status << " in " << tc.description;
     }
 
     ASSERT_EQ(test_records.size(), tc.expected_output_size)
@@ -2690,7 +2692,8 @@ TEST_F(AggregateExecTest,
       << "Preservation test should run at least 25 iterations";
 }
 
-TEST_F(AggregateExecTest, PreservationFirstValueSimpleModeBaselinePropertyTest) {
+TEST_F(AggregateExecTest,
+       PreservationFirstValueSimpleModeBaselinePropertyTest) {
   struct PropertyTestCase {
     std::vector<double> n1_values;
     double expected_first_value;
@@ -2706,7 +2709,8 @@ TEST_F(AggregateExecTest, PreservationFirstValueSimpleModeBaselinePropertyTest) 
       n1_values.push_back(static_cast<double>(i));
     }
     test_cases.push_back(
-        {n1_values, 0.0, "Sequential values, size " + std::to_string(group_size)});
+        {n1_values, 0.0,
+         "Sequential values, size " + std::to_string(group_size)});
   }
 
   // Test with negative first value
@@ -2714,7 +2718,8 @@ TEST_F(AggregateExecTest, PreservationFirstValueSimpleModeBaselinePropertyTest) 
       {{-10.0, 5.0, 0.0, 10.0}, -10.0, "Negative first value"});
 
   // Test with positive first value
-  test_cases.push_back({{100.0, 50.0, 75.0, 25.0}, 100.0, "Positive first value"});
+  test_cases.push_back(
+      {{100.0, 50.0, 75.0, 25.0}, 100.0, "Positive first value"});
 
   // Test with zero first value
   test_cases.push_back({{0.0, 10.0, 20.0, 30.0}, 0.0, "Zero first value"});
@@ -2728,8 +2733,7 @@ TEST_F(AggregateExecTest, PreservationFirstValueSimpleModeBaselinePropertyTest) 
       {{0.001, 100.0, 200.0, 300.0}, 0.001, "Small first value"});
 
   // Test with duplicate values
-  test_cases.push_back(
-      {{5.0, 5.0, 5.0, 5.0}, 5.0, "All same values"});
+  test_cases.push_back({{5.0, 5.0, 5.0, 5.0}, 5.0, "All same values"});
 
   // Random test cases
   std::mt19937 rng(54321);
@@ -2746,8 +2750,8 @@ TEST_F(AggregateExecTest, PreservationFirstValueSimpleModeBaselinePropertyTest) 
       n1_values.push_back(value_dist(rng));
     }
 
-    test_cases.push_back({n1_values, first_value,
-                          "Random iteration " + std::to_string(iter)});
+    test_cases.push_back(
+        {n1_values, first_value, "Random iteration " + std::to_string(iter)});
   }
 
   size_t iteration = 0;
@@ -2800,45 +2804,87 @@ TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsTest) {
 
   Testcase testcases[]{
       // 3-arg mode with unquoted BY (default ASC order)
-      {"groupby 1 @n2 reduce first_value 3 @n1 BY @n1", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 3 @n1 BY @n1",
+       4,
+       {0},
+       true,
        "3-arg mode with unquoted BY"},
 
       // 4-arg mode with unquoted BY and ASC
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC",
+       4,
+       {0},
+       true,
        "4-arg mode with unquoted BY and ASC"},
 
       // 4-arg mode with unquoted BY and DESC
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC", 4, {3}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC",
+       4,
+       {3},
+       true,
        "4-arg mode with unquoted BY and DESC"},
 
       // Case-insensitivity tests for BY keyword
-      {"groupby 1 @n2 reduce first_value 3 @n1 by @n1", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 3 @n1 by @n1",
+       4,
+       {0},
+       true,
        "3-arg mode with lowercase 'by'"},
-      {"groupby 1 @n2 reduce first_value 3 @n1 By @n1", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 3 @n1 By @n1",
+       4,
+       {0},
+       true,
        "3-arg mode with mixed case 'By'"},
 
       // Case-insensitivity tests for ASC keyword
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 asc", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 asc",
+       4,
+       {0},
+       true,
        "4-arg mode with lowercase 'asc'"},
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 Asc", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 Asc",
+       4,
+       {0},
+       true,
        "4-arg mode with mixed case 'Asc'"},
 
       // Case-insensitivity tests for DESC keyword
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 desc", 4, {3}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 desc",
+       4,
+       {3},
+       true,
        "4-arg mode with lowercase 'desc'"},
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 Desc", 4, {3}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 Desc",
+       4,
+       {3},
+       true,
        "4-arg mode with mixed case 'Desc'"},
 
       // Mixed case combinations
-      {"groupby 1 @n2 reduce first_value 3 @n1 by @n1", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 3 @n1 by @n1",
+       4,
+       {0},
+       true,
        "3-arg with lowercase by"},
-      {"groupby 1 @n2 reduce first_value 4 @n1 by @n1 asc", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 by @n1 asc",
+       4,
+       {0},
+       true,
        "4-arg with lowercase by and asc"},
-      {"groupby 1 @n2 reduce first_value 4 @n1 by @n1 desc", 4, {3}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 by @n1 desc",
+       4,
+       {3},
+       true,
        "4-arg with lowercase by and desc"},
-      {"groupby 1 @n2 reduce first_value 4 @n1 By @n1 Asc", 4, {0}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 By @n1 Asc",
+       4,
+       {0},
+       true,
        "4-arg with mixed case By and Asc"},
-      {"groupby 1 @n2 reduce first_value 4 @n1 By @n1 Desc", 4, {3}, true,
+      {"groupby 1 @n2 reduce first_value 4 @n1 By @n1 Desc",
+       4,
+       {3},
+       true,
        "4-arg with mixed case By and Desc"},
   };
 
@@ -2853,7 +2899,8 @@ TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsTest) {
     if (tc.should_succeed) {
       EXPECT_TRUE(status.ok()) << "Expected success but got: " << status
                                << " for " << tc.description_;
-      EXPECT_EQ(records.size(), 1) << "Expected 1 group for " << tc.description_;
+      EXPECT_EQ(records.size(), 1)
+          << "Expected 1 group for " << tc.description_;
       auto record = records.pop_front();
       for (auto i = 0; i < tc.values_.size(); ++i) {
         EXPECT_TRUE(record->fields_.at(i + 2).IsDouble())
@@ -2874,7 +2921,6 @@ TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsTest) {
 }
 
 TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsEdgeCasesTest) {
-
   // Edge Case 1: Single record
   {
     auto param = MakeStages("groupby 1 @n2 reduce first_value 3 @n1 BY @n1");
@@ -3024,8 +3070,8 @@ TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsEdgeCasesTest) {
   }
 }
 
-TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsStringComparisonTest) {
-
+TEST_F(AggregateExecTest,
+       FirstValueByClauseUnquotedKeywordsStringComparisonTest) {
   // String comparison with unquoted BY ASC
   {
     auto param =
@@ -3076,8 +3122,7 @@ TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsStringComparisonTest
 
   // String comparison with unquoted by (lowercase)
   {
-    auto param =
-        MakeStages("groupby 1 @n2 reduce first_value 3 @n1 by @n1");
+    auto param = MakeStages("groupby 1 @n2 reduce first_value 3 @n1 by @n1");
     RecordSet test_records(nullptr);
 
     std::vector<std::string> strings = {"dog", "cat", "bird", "ant"};

@@ -20,11 +20,12 @@ struct StringLiteralExpression : valkey_search::expr::Expression {
   explicit StringLiteralExpression(std::string value)
       : value_(std::move(value)) {}
 
-  valkey_search::expr::Value Evaluate(EvalContext& ctx, const Record& record) const override {
+  valkey_search::expr::Value Evaluate(EvalContext &ctx,
+                                      const Record &record) const override {
     return valkey_search::expr::Value(value_);
   }
 
-  void Dump(std::ostream& os) const override {
+  void Dump(std::ostream &os) const override {
     os << "StringLiteral(\"" << value_ << "\")";
   }
 
@@ -262,39 +263,40 @@ ConstructGroupByParser() {
                 absl::StrCat("incorrect number of arguments (", cnt,
                              ") to reducer ", uc_name.AsStringView()));
           }
-          
+
           // Check if this is FIRST_VALUE reducer with BY clause
           bool is_first_value = (uc_name.AsStringView() == "FIRST_VALUE");
-          
+
           for (int i = 0; i < cnt; ++i) {
             VMSDK_ASSIGN_OR_RETURN(auto arg, itr.PopNext(),
                                    _ << "Missing Reducer argument " << i);
             auto arg_view = vmsdk::ToStringView(arg);
-            
+
             // Special handling for FIRST_VALUE keywords
             std::unique_ptr<expr::Expression> expr;
             if (is_first_value && cnt >= 3) {
               // Position 1 should be "BY" keyword
               if (i == 1 && MatchesKeyword(arg_view, "BY")) {
-                expr = std::make_unique<StringLiteralExpression>(std::string(arg_view));
+                expr = std::make_unique<StringLiteralExpression>(
+                    std::string(arg_view));
               }
               // Position 3 (if nargs == 4) should be "ASC" or "DESC" keyword
-              else if (i == 3 && cnt == 4 && 
-                       (MatchesKeyword(arg_view, "ASC") || MatchesKeyword(arg_view, "DESC"))) {
-                expr = std::make_unique<StringLiteralExpression>(std::string(arg_view));
-              }
-              else {
+              else if (i == 3 && cnt == 4 &&
+                       (MatchesKeyword(arg_view, "ASC") ||
+                        MatchesKeyword(arg_view, "DESC"))) {
+                expr = std::make_unique<StringLiteralExpression>(
+                    std::string(arg_view));
+              } else {
                 // Normal expression compilation
                 VMSDK_ASSIGN_OR_RETURN(
-                    expr,
-                    expr::Expression::Compile(parameters, arg_view),
+                    expr, expr::Expression::Compile(parameters, arg_view),
                     _ << " in GROUPBY stage");
               }
             } else {
-              // Normal expression compilation for non-FIRST_VALUE or simple mode
+              // Normal expression compilation for non-FIRST_VALUE or simple
+              // mode
               VMSDK_ASSIGN_OR_RETURN(
-                  expr,
-                  expr::Expression::Compile(parameters, arg_view),
+                  expr, expr::Expression::Compile(parameters, arg_view),
                   _ << " in GROUPBY stage");
             }
             r.args_.emplace_back(std::move(expr));
