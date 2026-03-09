@@ -1714,8 +1714,8 @@ TEST_F(AggregateExecTest, FirstValueNilReturnPreservationPropertyTest) {
 
     std::ostringstream desc;
     desc << "Group size " << group_size << ", " << (is_desc ? "DESC" : "ASC")
-         << " mode, "
-         << "optimal at index " << optimal_idx << " with nil return";
+         << " mode, " << "optimal at index " << optimal_idx
+         << " with nil return";
 
     test_cases.push_back({
         desc.str(), return_vals, comparison_vals, is_desc,
@@ -1768,8 +1768,8 @@ TEST_F(AggregateExecTest, FirstValueNilReturnPreservationPropertyTest) {
 
     std::ostringstream desc;
     desc << "Group size " << group_size << ", " << (is_desc ? "DESC" : "ASC")
-         << " mode, "
-         << "nil at index " << nil_idx << ", optimal at " << optimal_idx;
+         << " mode, " << "nil at index " << nil_idx << ", optimal at "
+         << optimal_idx;
 
     test_cases.push_back({
         desc.str(), return_vals, comparison_vals, is_desc,
