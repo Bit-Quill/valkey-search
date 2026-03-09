@@ -296,19 +296,20 @@ class Max : public GroupBy::ReducerInstance {
 class FirstValue : public GroupBy::ReducerInstance {
   expr::Value result_value_;
   expr::Value comparison_value_;
-  bool initialized_ = false;  // Track if we've seen any records
 
-  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
-    if (all_values.empty()) {
-      return;
-    }
+  // Mode resolved once on first call, then reused for the group.
+  enum class Mode { kUnresolved, kSimple, kSorted, kInvalid };
+  Mode mode_ = Mode::kUnresolved;
+  bool is_desc_ = false;
+  bool initialized_ = false;
 
-    size_t nargs = all_values[0].size();
+  // Resolve mode and sort order from the first record's arguments.
+  // Called once per group; avoids re-parsing BY/ASC/DESC per record.
+  void ResolveMode(const ArgVector &first) {
+    size_t nargs = first.size();
 
-    // Simple mode: REDUCE FIRST_VALUE 1 @property
-    // Returns the first value encountered in the group
     if (nargs == 1) {
-      result_value_ = all_values[0][0];
+      mode_ = Mode::kSimple;
       return;
     }
 
@@ -317,6 +318,7 @@ class FirstValue : public GroupBy::ReducerInstance {
     // content. Invalid keyword arguments result in nil/empty result
     // (ProcessRecords cannot currently propagate errors).
     if (nargs == 2) {
+      mode_ = Mode::kInvalid;
       return;
     }
 
@@ -325,83 +327,96 @@ class FirstValue : public GroupBy::ReducerInstance {
     // [3]=order
 
     // Validate "BY" keyword (case-insensitive)
-    if (!all_values[0][1].IsString()) {
-      // Silent error: Returns nil when BY argument is not a string.
-      // This occurs when parser fails to recognize BY as a keyword.
-      // (ProcessRecords cannot currently propagate errors).
+    // Silent error: Returns nil when BY argument is not a string.
+    // This occurs when parser fails to recognize BY as a keyword.
+    // (ProcessRecords cannot currently propagate errors).
+    if (!first[1].IsString()) {
+      mode_ = Mode::kInvalid;
       return;
     }
-    auto by_upper = expr::FuncUpper(all_values[0][1]);
-    auto by_str = by_upper.AsStringView();
-    if (by_str != "BY") {
-      // Silent error: Returns nil when BY keyword is invalid.
-      // This occurs when user provides incorrect keyword (e.g., "NOTBY").
-      // (ProcessRecords cannot currently propagate errors).
+    // Silent error: Returns nil when BY keyword is invalid.
+    // This occurs when user provides incorrect keyword (e.g., "NOTBY").
+    // (ProcessRecords cannot currently propagate errors).
+    auto by_upper = expr::FuncUpper(first[1]);
+    if (by_upper.AsStringView() != "BY") {
+      mode_ = Mode::kInvalid;
       return;
     }
 
     // Parse sort order (default: ASC)
-    bool is_desc = false;
+    is_desc_ = false;
     if (nargs == 4) {
-      if (!all_values[0][3].IsString()) {
-        // Silent error: Returns nil when order argument is not a string.
-        // (ProcessRecords cannot currently propagate errors).
+      // Silent error: Returns nil when order argument is not a string.
+      // (ProcessRecords cannot currently propagate errors).
+      if (!first[3].IsString()) {
+        mode_ = Mode::kInvalid;
         return;
       }
-      auto order_upper = expr::FuncUpper(all_values[0][3]);
+      auto order_upper = expr::FuncUpper(first[3]);
       auto order_str = order_upper.AsStringView();
-
       if (order_str == "DESC") {
-        is_desc = true;
+        is_desc_ = true;
       } else if (order_str != "ASC") {
         // Silent error: Returns nil when order is neither ASC nor DESC.
         // This occurs when user provides invalid order (e.g., "INVALID").
         // (ProcessRecords cannot currently propagate errors).
+        mode_ = Mode::kInvalid;
         return;
       }
     }
+    
+    mode_ = Mode::kSorted;
+  }
 
-    // Find the record with optimal comparison value.
-    // Tie-breaking: When multiple records have equal comparison values,
-    // the first encountered record is returned. This depends on record
-    // retrieval order and is non-deterministic.
+  void ProcessRecords(const std::vector<ArgVector> &all_values) override {
+    if (all_values.empty()) {
+      return;
+    }
+
+    // Resolve mode once from the first record's argument layout.
+    if (mode_ == Mode::kUnresolved) {
+      ResolveMode(all_values[0]);
+    }
+
+    if (mode_ == Mode::kInvalid) {
+      return;
+    }
+
+    // Simple mode: just take the first value, skip the rest.
+    if (mode_ == Mode::kSimple) {
+      result_value_ = all_values[0][0];
+      return;
+    }
+
+    // Sorted mode: find the record with optimal comparison value.
+    // Tie-breaking: first encountered record wins on equal values.
     for (const auto &values : all_values) {
-      expr::Value return_val = values[0];
-      expr::Value comparison_val = values[2];
+      const expr::Value &comparison_val = values[2];
 
-      // Initialize with first record (even if comparison is nil)
       if (!initialized_) {
-        result_value_ = return_val;
+        result_value_ = values[0];
         comparison_value_ = comparison_val;
         initialized_ = true;
         continue;
       }
 
-      // Skip subsequent records with nil comparison values
+      // Skip nil comparison values
       if (comparison_val.IsNil()) {
         continue;
       }
 
-      // If stored comparison is nil, replace with first non-nil
+      // Replace stored nil with first non-nil
       if (comparison_value_.IsNil()) {
-        result_value_ = return_val;
+        result_value_ = values[0];
         comparison_value_ = comparison_val;
         continue;
       }
 
-      // Update based on comparison (both values are non-nil).
-      // Note: Using < and > (not <= or >=) ensures first-encountered
-      // tie-breaking behavior.
-      if (is_desc) {
-        if (comparison_val > comparison_value_) {
-          result_value_ = return_val;
-          comparison_value_ = comparison_val;
-        }
-      } else {
-        if (comparison_val < comparison_value_) {
-          result_value_ = return_val;
-          comparison_value_ = comparison_val;
-        }
+      // Strict < / > ensures first-encountered tie-breaking.
+      if (is_desc_ ? (comparison_val > comparison_value_)
+                   : (comparison_val < comparison_value_)) {
+        result_value_ = values[0];
+        comparison_value_ = comparison_val;
       }
     }
   }
