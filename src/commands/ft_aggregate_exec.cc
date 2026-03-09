@@ -364,7 +364,7 @@ class FirstValue : public GroupBy::ReducerInstance {
         return;
       }
     }
-    
+
     mode_ = Mode::kSorted;
   }
 
