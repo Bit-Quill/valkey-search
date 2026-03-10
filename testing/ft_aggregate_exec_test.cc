@@ -315,60 +315,50 @@ TEST_F(AggregateExecTest, FirstValueReducerTest) {
       // Simple mode: returns first record's value.
       {"groupby 1 @n2 reduce first_value 1 @n1", 4, {0}, true},
       // Sorted ASC: returns value from record with minimum comparison value.
-      {"groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"ASC\"'",
-       4,
-       {0},
-       true},
+      {"groupby 1 @n2 reduce first_value 3 @n1 BY @n1", 4, {0}, true},
+      // Sorted ASC explicit: same result.
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC", 4, {0}, true},
       // Sorted DESC: returns value from record with maximum comparison value.
-      {"groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"DESC\"'",
-       4,
-       {3},
-       true},
-      // 3-arg form (no direction): defaults to ASC.
-      {"groupby 1 @n2 reduce first_value 3 @n1 '\"BY\"' @n1", 4, {0}, true},
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC", 4, {3}, true},
       // Case-insensitive BY keyword.
-      {"groupby 1 @n2 reduce first_value 3 @n1 '\"by\"' @n1", 4, {0}, true},
+      {"groupby 1 @n2 reduce first_value 3 @n1 by @n1", 4, {0}, true},
       // Case-insensitive direction.
-      {"groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"desc\"'",
-       4,
-       {3},
-       true},
-      // Invalid: nargs=2 (BY with no sort field).
-      {"groupby 1 @n2 reduce first_value 2 @n1 '\"BY\"'", 4, {}, false},
-      // Invalid: unrecognised keyword instead of BY.
-      {"groupby 1 @n2 reduce first_value 3 @n1 '\"WITH\"' @n1", 4, {}, false},
-      // Invalid: unrecognised direction.
-      {"groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"UP\"'",
-       4,
-       {},
-       false},
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 desc", 4, {3}, true},
+      // Invalid: nargs=2 (BY with no sort field) — parse error.
+      {"groupby 1 @n2 reduce first_value 2 @n1 BY", 4, {}, false},
+      // Invalid: unrecognised keyword instead of BY — parse error.
+      {"groupby 1 @n2 reduce first_value 3 @n1 WITH @n1", 4, {}, false},
+      // Invalid: unrecognised direction — parse error.
+      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 UP", 4, {}, false},
   };
 
   for (auto &tc : testcases) {
     std::cerr << "FirstValueReducerTest: " << tc.text_ << "\n";
+    if (!tc.should_succeed) {
+      // Parse errors are now surfaced at parse time, not execution time.
+      auto argv = vmsdk::ToValkeyStringVector(tc.text_);
+      vmsdk::ArgsIterator itr(argv.data(), argv.size());
+      auto params = std::make_unique<AggregateParameters>(0);
+      params->parse_vars_.index_interface_ = &fakeIndex;
+      params->AddRecordAttribute("n1", "n1", indexes::IndexerType::kNumeric);
+      params->AddRecordAttribute("n2", "n1", indexes::IndexerType::kNumeric);
+      auto parser = CreateAggregateParser();
+      auto result = parser.Parse(*params, itr);
+      EXPECT_FALSE(result.ok()) << tc.text_ << ": expected parse failure";
+      for (auto *str : argv) ValkeyModule_FreeString(nullptr, str);
+      continue;
+    }
     auto param = MakeStages(tc.text_);
     auto records = MakeData(tc.m);
-    for (auto &r : records) {
-      std::cerr << *r << "\n";
-    }
     auto status = param->stages_[0]->Execute(records);
-    if (tc.should_succeed) {
-      EXPECT_TRUE(status.ok()) << tc.text_ << ": " << status;
-      EXPECT_EQ(records.size(), 1);
-      auto record = records.pop_front();
-      std::cerr << "Result: " << *record << "\n";
-      for (size_t i = 0; i < tc.values_.size(); ++i) {
-        EXPECT_TRUE(record->fields_.at(i + 2).IsDouble());
-        EXPECT_NEAR(*(record->fields_.at(i + 2).AsDouble()), tc.values_[i],
-                    .001);
-      }
-    } else {
-      if (status.ok() && records.size() == 1) {
-        auto record = records.pop_front();
-        std::cerr << "Result (expected nil): " << *record << "\n";
-        EXPECT_TRUE(record->fields_.at(2).IsNil())
-            << tc.text_ << ": expected nil for invalid arguments";
-      }
+    EXPECT_TRUE(status.ok()) << tc.text_ << ": " << status;
+    EXPECT_EQ(records.size(), 1);
+    auto record = records.pop_front();
+    std::cerr << "Result: " << *record << "\n";
+    for (size_t i = 0; i < tc.values_.size(); ++i) {
+      EXPECT_TRUE(record->fields_.at(i + 2).IsDouble());
+      EXPECT_NEAR(*(record->fields_.at(i + 2).AsDouble()), tc.values_[i],
+                  .001);
     }
   }
 }
@@ -387,7 +377,7 @@ TEST_F(AggregateExecTest, FirstValueReducerEdgeCasesTest) {
   {
     std::cerr << "FirstValueReducerEdgeCasesTest: all nil comparison values\n";
     auto param = MakeStages(
-        "groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"ASC\"'");
+        "groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
     RecordSet records(nullptr);
     for (size_t i = 0; i < 4; ++i) {
       auto rec = std::make_unique<Record>(2);
@@ -406,7 +396,7 @@ TEST_F(AggregateExecTest, FirstValueReducerEdgeCasesTest) {
   {
     std::cerr << "FirstValueReducerEdgeCasesTest: nil return value preserved\n";
     auto param = MakeStages(
-        "groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n2 '\"ASC\"'");
+        "groupby 1 @n2 reduce first_value 4 @n1 BY @n2 ASC");
     RecordSet records(nullptr);
     // rec with n2=1 (best ASC) has nil n1 — that nil should be returned.
     auto r1 = std::make_unique<Record>(2);
@@ -439,7 +429,7 @@ TEST_F(AggregateExecTest, FirstValueReducerEdgeCasesTest) {
   {
     std::cerr << "FirstValueReducerEdgeCasesTest: tie-breaking ASC\n";
     auto param = MakeStages(
-        "groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"ASC\"'");
+        "groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
     RecordSet records(nullptr);
     for (double v : {10.0, 10.0, 50.0}) {
       auto rec = std::make_unique<Record>(2);
@@ -458,7 +448,7 @@ TEST_F(AggregateExecTest, FirstValueReducerEdgeCasesTest) {
   {
     std::cerr << "FirstValueReducerEdgeCasesTest: tie-breaking DESC\n";
     auto param = MakeStages(
-        "groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"DESC\"'");
+        "groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
     RecordSet records(nullptr);
     for (double v : {50.0, 100.0, 100.0}) {
       auto rec = std::make_unique<Record>(2);
@@ -477,7 +467,7 @@ TEST_F(AggregateExecTest, FirstValueReducerEdgeCasesTest) {
   {
     std::cerr << "FirstValueReducerEdgeCasesTest: mixed nil/non-nil\n";
     auto param = MakeStages(
-        "groupby 1 @n2 reduce first_value 4 @n1 '\"BY\"' @n1 '\"ASC\"'");
+        "groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
     RecordSet records(nullptr);
     // nil, 50, nil, 100 — minimum non-nil is 50.
     for (auto v : {std::optional<double>{}, std::optional<double>{50.0},
@@ -495,323 +485,6 @@ TEST_F(AggregateExecTest, FirstValueReducerEdgeCasesTest) {
   }
 }
 
-TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsTest) {
-  struct Testcase {
-    std::string text_;
-    size_t m;
-    std::vector<double> values_;
-    bool should_succeed;
-    std::string description_;
-  };
-
-  Testcase testcases[]{
-      // 3-arg mode with unquoted BY (default ASC order)
-      {"groupby 1 @n2 reduce first_value 3 @n1 BY @n1",
-       4,
-       {0},
-       true,
-       "3-arg unquoted BY"},
-      // 4-arg mode with unquoted BY and ASC
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC",
-       4,
-       {0},
-       true,
-       "4-arg unquoted BY ASC"},
-      // 4-arg mode with unquoted BY and DESC
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC",
-       4,
-       {3},
-       true,
-       "4-arg unquoted BY DESC"},
-      // Case-insensitive BY keyword
-      {"groupby 1 @n2 reduce first_value 3 @n1 by @n1",
-       4,
-       {0},
-       true,
-       "lowercase by"},
-      // Case-insensitive direction keywords
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 asc",
-       4,
-       {0},
-       true,
-       "lowercase asc"},
-      {"groupby 1 @n2 reduce first_value 4 @n1 BY @n1 desc",
-       4,
-       {3},
-       true,
-       "lowercase desc"},
-  };
-
-  for (auto &tc : testcases) {
-    std::cerr << "FirstValueByClauseUnquotedKeywordsTest: " << tc.description_
-              << "\n";
-    auto param = MakeStages(tc.text_);
-    auto records = MakeData(tc.m);
-    for (auto &r : records) {
-      std::cerr << *r << "\n";
-    }
-    auto status = param->stages_[0]->Execute(records);
-    if (tc.should_succeed) {
-      EXPECT_TRUE(status.ok()) << tc.description_ << ": " << status;
-      EXPECT_EQ(records.size(), 1) << tc.description_;
-      auto record = records.pop_front();
-      std::cerr << "Result: " << *record << "\n";
-      for (size_t i = 0; i < tc.values_.size(); ++i) {
-        EXPECT_TRUE(record->fields_.at(i + 2).IsDouble()) << tc.description_;
-        EXPECT_NEAR(*(record->fields_.at(i + 2).AsDouble()), tc.values_[i],
-                    .001)
-            << tc.description_;
-      }
-    } else {
-      if (status.ok() && records.size() == 1) {
-        auto record = records.pop_front();
-        std::cerr << "Result (expected nil): " << *record << "\n";
-        EXPECT_TRUE(record->fields_.at(2).IsNil()) << tc.description_;
-      }
-    }
-  }
-}
-
-TEST_F(AggregateExecTest, FirstValueByClauseUnquotedKeywordsEdgeCasesTest) {
-  // Edge Case 1: Single record
-  {
-    std::cerr
-        << "FirstValueByClauseUnquotedKeywordsEdgeCasesTest: single record\n";
-    auto param = MakeStages("groupby 1 @n2 reduce first_value 3 @n1 BY @n1");
-    RecordSet test_records(nullptr);
-
-    auto rec = std::make_unique<Record>(2);
-    rec->fields_[0] = expr::Value(42.0);
-    rec->fields_[1] = expr::Value(1.0);
-    test_records.emplace_back(std::move(rec));
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsDouble());
-    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), 42.0, 0.001);
-  }
-
-  // Edge Case 2: All same comparison values with unquoted BY ASC
-  {
-    std::cerr
-        << "FirstValueByClauseUnquotedKeywordsEdgeCasesTest: all same values\n";
-    auto param =
-        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
-    RecordSet test_records(nullptr);
-
-    for (int i = 0; i < 4; ++i) {
-      auto rec = std::make_unique<Record>(2);
-      rec->fields_[0] = expr::Value(10.0);  // All same comparison value
-      rec->fields_[1] = expr::Value(1.0);
-      test_records.emplace_back(std::move(rec));
-    }
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsDouble());
-    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), 10.0, 0.001)
-        << "Should return first encountered value when all are equal";
-  }
-
-  // Edge Case 3: Negative numbers with unquoted BY ASC
-  {
-    std::cerr << "FirstValueByClauseUnquotedKeywordsEdgeCasesTest: negative "
-                 "numbers\n";
-    auto param =
-        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
-    RecordSet test_records(nullptr);
-
-    std::vector<double> values = {-100.0, -50.0, -200.0, -10.0};
-    for (double val : values) {
-      auto rec = std::make_unique<Record>(2);
-      rec->fields_[0] = expr::Value(val);
-      rec->fields_[1] = expr::Value(1.0);
-      test_records.emplace_back(std::move(rec));
-    }
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsDouble());
-    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), -200.0, 0.001)
-        << "Should return minimum (most negative) value";
-  }
-
-  // Edge Case 4: Large value range with unquoted BY DESC
-  {
-    std::cerr << "FirstValueByClauseUnquotedKeywordsEdgeCasesTest: large value "
-                 "range\n";
-    auto param =
-        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
-    RecordSet test_records(nullptr);
-
-    std::vector<double> values = {1000000.0, -1000000.0, 500000.0, 0.0};
-    for (double val : values) {
-      auto rec = std::make_unique<Record>(2);
-      rec->fields_[0] = expr::Value(val);
-      rec->fields_[1] = expr::Value(1.0);
-      test_records.emplace_back(std::move(rec));
-    }
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsDouble());
-    EXPECT_NEAR(*(record->fields_.at(2).AsDouble()), 1000000.0, 0.001)
-        << "Should handle large value ranges correctly";
-  }
-}
-
-TEST_F(AggregateExecTest,
-       FirstValueByClauseUnquotedKeywordsStringComparisonTest) {
-  // String comparison with unquoted BY ASC
-  {
-    std::cerr
-        << "FirstValueByClauseUnquotedKeywordsStringComparisonTest: ASC\n";
-    auto param =
-        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
-    RecordSet test_records(nullptr);
-
-    std::vector<std::string> strings = {"zebra", "apple", "mango", "banana"};
-    for (const auto &str : strings) {
-      auto rec = std::make_unique<Record>(2);
-      rec->fields_[0] = expr::Value(str);
-      rec->fields_[1] = expr::Value(1.0);
-      test_records.emplace_back(std::move(rec));
-    }
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsString());
-    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "apple")
-        << "Should return lexicographically smallest string";
-  }
-
-  // String comparison with unquoted BY DESC
-  {
-    std::cerr
-        << "FirstValueByClauseUnquotedKeywordsStringComparisonTest: DESC\n";
-    auto param =
-        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
-    RecordSet test_records(nullptr);
-
-    std::vector<std::string> strings = {"zebra", "apple", "mango", "banana"};
-    for (const auto &str : strings) {
-      auto rec = std::make_unique<Record>(2);
-      rec->fields_[0] = expr::Value(str);
-      rec->fields_[1] = expr::Value(1.0);
-      test_records.emplace_back(std::move(rec));
-    }
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsString());
-    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "zebra")
-        << "Should return lexicographically largest string";
-  }
-
-  // String comparison with unquoted by (lowercase)
-  {
-    std::cerr << "FirstValueByClauseUnquotedKeywordsStringComparisonTest: "
-                 "lowercase by\n";
-    auto param = MakeStages("groupby 1 @n2 reduce first_value 3 @n1 by @n1");
-    RecordSet test_records(nullptr);
-
-    std::vector<std::string> strings = {"dog", "cat", "bird", "ant"};
-    for (const auto &str : strings) {
-      auto rec = std::make_unique<Record>(2);
-      rec->fields_[0] = expr::Value(str);
-      rec->fields_[1] = expr::Value(1.0);
-      test_records.emplace_back(std::move(rec));
-    }
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsString());
-    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "ant")
-        << "Should return lexicographically smallest string (default ASC)";
-  }
-
-  // Lexicographic ordering where "10" < "2" (string comparison)
-  {
-    std::cerr << "FirstValueByClauseUnquotedKeywordsStringComparisonTest: "
-                 "lexicographic ASC\n";
-    auto param =
-        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 ASC");
-    RecordSet test_records(nullptr);
-
-    std::vector<std::string> strings = {"10", "2", "20", "3"};
-    for (const auto &str : strings) {
-      auto rec = std::make_unique<Record>(2);
-      rec->fields_[0] = expr::Value(str);
-      rec->fields_[1] = expr::Value(1.0);
-      test_records.emplace_back(std::move(rec));
-    }
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsString());
-    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "10")
-        << "Lexicographic: '10' < '2' in string comparison";
-  }
-
-  // Lexicographic ordering DESC
-  {
-    std::cerr << "FirstValueByClauseUnquotedKeywordsStringComparisonTest: "
-                 "lexicographic DESC\n";
-    auto param =
-        MakeStages("groupby 1 @n2 reduce first_value 4 @n1 BY @n1 DESC");
-    RecordSet test_records(nullptr);
-
-    std::vector<std::string> strings = {"10", "2", "20", "3"};
-    for (const auto &str : strings) {
-      auto rec = std::make_unique<Record>(2);
-      rec->fields_[0] = expr::Value(str);
-      rec->fields_[1] = expr::Value(1.0);
-      test_records.emplace_back(std::move(rec));
-    }
-
-    auto status = param->stages_[0]->Execute(test_records);
-    EXPECT_TRUE(status.ok()) << "Execution failed: " << status;
-    EXPECT_EQ(test_records.size(), 1);
-
-    auto record = test_records.pop_front();
-    std::cerr << "Result: " << *record << "\n";
-    EXPECT_TRUE(record->fields_.at(2).IsString());
-    EXPECT_EQ(std::string(record->fields_.at(2).AsStringView()), "3")
-        << "Lexicographic: '3' > '20' in string comparison";
-  }
-}
 
 }  // namespace aggregate
 }  // namespace valkey_search

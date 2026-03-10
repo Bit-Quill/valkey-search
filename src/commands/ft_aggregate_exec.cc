@@ -210,18 +210,17 @@ absl::Status GroupBy::Execute(RecordSet &records) const {
     if (inserted) {
       DBG << "Was inserted, now have " << groups.size() << " groups\n";
       for (auto &reducer : reducers_) {
-        ArgVector args;
-        for (auto &nargs : reducer.args_) {
-          args.emplace_back(nargs->Evaluate(ctx, *record));
-        }
-        group_it->second.emplace_back(std::move(reducer.info_->make_instance()),
-                                      std::vector<ArgVector>{});
+        group_it->second.emplace_back(
+            reducer.info_->make_instance(reducer.args_),
+            std::vector<ArgVector>{});
       }
     }
     for (int i = 0; i < reducers_.size(); ++i) {
       ArgVector args;
       for (auto &nargs : reducers_[i].args_) {
-        args.emplace_back(nargs->Evaluate(ctx, *record));
+        if (nargs) {
+          args.emplace_back(nargs->Evaluate(ctx, *record));
+        }
       }
       group_it->second[i].second.push_back(args);
     }
@@ -295,126 +294,44 @@ class Max : public GroupBy::ReducerInstance {
 
 class FirstValue : public GroupBy::ReducerInstance {
   expr::Value result_value_;
+  // Sorted mode state.
   expr::Value comparison_value_;
+  bool is_sorted_{false};
+  bool is_desc_{false};
+  bool initialized_{false};
 
-  // Mode is resolved once on the first ProcessRecords call, then reused.
-  // Resolving once per group avoids redundant string parsing per record.
-  enum class Mode { kUnresolved, kSimple, kSorted, kInvalid };
-  Mode mode_ = Mode::kUnresolved;
-  bool is_desc_ = false;
-  // Tracks whether any record has been stored yet in sorted mode.
-  // Needed because a default-constructed comparison_value_ (nil) is
-  // indistinguishable from a legitimately nil field value on the first record.
-  bool initialized_ = false;
-
-  // Resolves the operating mode from the first record's argument vector.
-  // Must be called exactly once per group, before iterating all_values.
-  void ResolveMode(const ArgVector &first) {
-    size_t nargs = first.size();
-
-    if (nargs == 1) {
-      mode_ = Mode::kSimple;
-      return;
-    }
-
-    // nargs=2 is structurally invalid: a BY clause requires at least a
-    // comparison expression, making the minimum sorted-mode count 3.
-    // The parser enforces min/max arg counts, so this path is a safeguard.
-    // Result: nil.
-    if (nargs == 2) {
-      mode_ = Mode::kInvalid;
-      return;
-    }
-
-    // Sorted mode: validate the BY keyword at position [1].
-    // first[1] is a StringLiteralExpression result — it is always a string
-    // when the parser recognised "BY". A non-string here means the parser
-    // fell through to normal field-expression compilation (e.g., the user
-    // wrote a field reference where "BY" was expected). Result: nil.
-    if (!first[1].IsString()) {
-      mode_ = Mode::kInvalid;
-      return;
-    }
-    auto by_upper = expr::FuncUpper(first[1]);
-    // The string is present but is not "BY" (e.g., user wrote "NOTBY").
-    // Result: nil.
-    if (by_upper.AsStringView() != "BY") {
-      mode_ = Mode::kInvalid;
-      return;
-    }
-
-    // Parse sort direction (default: ASC when nargs=3).
-    is_desc_ = false;
-    if (nargs == 4) {
-      // first[3] is a StringLiteralExpression result for ASC/DESC.
-      // A non-string means the parser did not recognise the direction token.
-      // Result: nil.
-      if (!first[3].IsString()) {
-        mode_ = Mode::kInvalid;
-        return;
-      }
-      auto order_upper = expr::FuncUpper(first[3]);
-      auto order_str = order_upper.AsStringView();
-      if (order_str == "DESC") {
-        is_desc_ = true;
-      } else if (order_str != "ASC") {
-        // Direction token is present but is neither "ASC" nor "DESC"
-        // (e.g., user wrote "INVALID"). Result: nil.
-        mode_ = Mode::kInvalid;
-        return;
-      }
-    }
-
-    mode_ = Mode::kSorted;
+ public:
+  void SetSorted(bool is_desc) {
+    is_sorted_ = true;
+    is_desc_ = is_desc;
   }
 
   void ProcessRecords(const std::vector<ArgVector> &all_values) override {
     if (all_values.empty()) {
       return;
     }
-
-    // Resolve mode once from the first record's argument layout.
-    if (mode_ == Mode::kUnresolved) {
-      ResolveMode(all_values[0]);
-    }
-
-    // Invalid argument layout — result remains nil. See class-level comment
-    // for the list of conditions that trigger this path.
-    if (mode_ == Mode::kInvalid) {
-      return;
-    }
-
-    // Simple mode: return the value from the first record; order is
-    // non-deterministic so there is no point scanning further.
-    if (mode_ == Mode::kSimple) {
+    if (!is_sorted_) {
+      // Simple mode: first record wins unconditionally.
       result_value_ = all_values[0][0];
       return;
     }
-
-    // Sorted mode: scan all records to find the one with the optimal
-    // comparison value. Tie-breaking: first-encountered record wins.
+    // Sorted mode: args layout is [return_field, sort_field].
     for (const auto &values : all_values) {
-      const expr::Value &comparison_val = values[2];
-
+      const expr::Value &comparison_val = values[1];
       if (!initialized_) {
         result_value_ = values[0];
         comparison_value_ = comparison_val;
         initialized_ = true;
         continue;
       }
-
-      // Skip records whose comparison value is nil — they cannot win.
       if (comparison_val.IsNil()) {
         continue;
       }
-
-      // If the stored comparison value is nil, any non-nil value wins.
       if (comparison_value_.IsNil()) {
         result_value_ = values[0];
         comparison_value_ = comparison_val;
         continue;
       }
-
       // Strict < / > preserves first-encountered tie-breaking semantics.
       if (is_desc_ ? (comparison_val > comparison_value_)
                    : (comparison_val < comparison_value_)) {
@@ -494,9 +411,83 @@ class CountDistinct : public GroupBy::ReducerInstance {
   }
 };
 
+// Custom argument parser for FIRST_VALUE.
+// Syntax: <field> [BY <sort_field> [ASC|DESC]]
+// Produces either 1 arg (simple mode) or 2 args (sorted mode: [field,
+// sort_field]). The BY keyword and optional ASC/DESC direction are consumed
+// here and encoded directly into the FirstValue instance, so the executor
+// never needs to re-parse them.
+absl::StatusOr<std::vector<std::unique_ptr<expr::Expression>>>
+ParseFirstValueArgs(AggregateParameters &params, vmsdk::ArgsIterator &itr,
+                    uint32_t nargs) {
+  std::vector<std::unique_ptr<expr::Expression>> args;
+
+  // arg 0: the field whose value to return.
+  VMSDK_ASSIGN_OR_RETURN(auto field_tok, itr.PopNext());
+  VMSDK_ASSIGN_OR_RETURN(
+      auto field_expr,
+      expr::Expression::Compile(params, vmsdk::ToStringView(field_tok)));
+  args.push_back(std::move(field_expr));
+
+  if (nargs == 1) {
+    return args;  // simple mode
+  }
+
+  // Expect "BY" as the next token.
+  VMSDK_ASSIGN_OR_RETURN(auto by_tok, itr.PopNext());
+  auto by_upper = expr::FuncUpper(expr::Value(vmsdk::ToStringView(by_tok)));
+  if (by_upper.AsStringView() != "BY") {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "FIRST_VALUE: expected BY, got `", vmsdk::ToStringView(by_tok), "`"));
+  }
+
+  // arg 1: the field to sort by.
+  VMSDK_ASSIGN_OR_RETURN(auto sort_tok, itr.PopNext());
+  VMSDK_ASSIGN_OR_RETURN(
+      auto sort_expr,
+      expr::Expression::Compile(params, vmsdk::ToStringView(sort_tok)));
+  args.push_back(std::move(sort_expr));
+
+  // Optional direction token (default: ASC).
+  if (nargs == 4) {
+    VMSDK_ASSIGN_OR_RETURN(auto dir_tok, itr.PopNext());
+    auto dir_upper =
+        expr::FuncUpper(expr::Value(vmsdk::ToStringView(dir_tok)));
+    auto dir_str = dir_upper.AsStringView();
+    if (dir_str != "ASC" && dir_str != "DESC") {
+      return absl::InvalidArgumentError(
+          absl::StrCat("FIRST_VALUE: expected ASC or DESC, got `",
+                       vmsdk::ToStringView(dir_tok), "`"));
+    }
+    // Push a sentinel arg only for DESC so MakeFirstValueReducer can detect
+    // direction from args.size() without any runtime string parsing.
+    if (dir_str == "DESC") {
+      args.push_back(nullptr);
+    }
+  }
+
+  return args;
+}
+
+// Factory that creates a FirstValue instance pre-configured from parsed args.
+// args layout: [field]                    -> simple mode
+//              [field, sort_field]         -> sorted ASC
+//              [field, sort_field, is_desc] -> sorted DESC (args[2] unused at
+//                                             runtime; direction baked in)
+std::unique_ptr<GroupBy::ReducerInstance> MakeFirstValueReducer(
+    const std::vector<std::unique_ptr<expr::Expression>> &args) {
+  auto instance = std::make_unique<FirstValue>();
+  if (args.size() >= 2) {
+    // args[2] presence means DESC was specified; absence means ASC.
+    instance->SetSorted(/*is_desc=*/args.size() == 3);
+  }
+  return instance;
+}
+
 template <typename T>
-std::unique_ptr<GroupBy::ReducerInstance> MakeReducer() {
-  return std::unique_ptr<GroupBy::ReducerInstance>(std::make_unique<T>());
+std::unique_ptr<GroupBy::ReducerInstance> MakeReducer(
+    const std::vector<std::unique_ptr<expr::Expression>> & /*args*/) {
+  return std::make_unique<T>();
 }
 
 absl::flat_hash_map<std::string, GroupBy::ReducerInfo> GroupBy::reducerTable{
@@ -505,7 +496,8 @@ absl::flat_hash_map<std::string, GroupBy::ReducerInfo> GroupBy::reducerTable{
     {"COUNT_DISTINCT",
      GroupBy::ReducerInfo{"COUNT_DISTINCT", 1, 1, &MakeReducer<CountDistinct>}},
     {"FIRST_VALUE",
-     GroupBy::ReducerInfo{"FIRST_VALUE", 1, 4, &MakeReducer<FirstValue>}},
+     GroupBy::ReducerInfo{"FIRST_VALUE", 1, 4, &MakeFirstValueReducer,
+                          &ParseFirstValueArgs}},
     {"MIN", GroupBy::ReducerInfo{"MIN", 1, 1, &MakeReducer<Min>}},
     {"MAX", GroupBy::ReducerInfo{"MAX", 1, 1, &MakeReducer<Max>}},
     {"STDDEV", GroupBy::ReducerInfo{"STDDEV", 1, 1, &MakeReducer<Stddev>}},
