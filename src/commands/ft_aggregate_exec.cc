@@ -297,14 +297,18 @@ class FirstValue : public GroupBy::ReducerInstance {
   expr::Value result_value_;
   expr::Value comparison_value_;
 
-  // Mode resolved once on first call, then reused for the group.
+  // Mode is resolved once on the first ProcessRecords call, then reused.
+  // Resolving once per group avoids redundant string parsing per record.
   enum class Mode { kUnresolved, kSimple, kSorted, kInvalid };
   Mode mode_ = Mode::kUnresolved;
   bool is_desc_ = false;
+  // Tracks whether any record has been stored yet in sorted mode.
+  // Needed because a default-constructed comparison_value_ (nil) is
+  // indistinguishable from a legitimately nil field value on the first record.
   bool initialized_ = false;
 
-  // Resolve mode and sort order from the first record's arguments.
-  // Called once per group; avoids re-parsing BY/ASC/DESC per record.
+  // Resolves the operating mode from the first record's argument vector.
+  // Must be called exactly once per group, before iterating all_values.
   void ResolveMode(const ArgVector &first) {
     size_t nargs = first.size();
 
@@ -313,41 +317,38 @@ class FirstValue : public GroupBy::ReducerInstance {
       return;
     }
 
-    // Invalid: incomplete BY clause (nargs == 2)
-    // Note: Parser validates argument count, but cannot validate keyword
-    // content. Invalid keyword arguments result in nil/empty result
-    // (ProcessRecords cannot currently propagate errors).
+    // nargs=2 is structurally invalid: a BY clause requires at least a
+    // comparison expression, making the minimum sorted-mode count 3.
+    // The parser enforces min/max arg counts, so this path is a safeguard.
+    // Result: nil.
     if (nargs == 2) {
       mode_ = Mode::kInvalid;
       return;
     }
 
-    // Sorted mode: REDUCE FIRST_VALUE 3|4 @property BY @comparison [ASC|DESC]
-    // Argument layout: [0]=return_property, [1]="BY", [2]=comparison_property,
-    // [3]=order
-
-    // Validate "BY" keyword (case-insensitive)
-    // Silent error: Returns nil when BY argument is not a string.
-    // This occurs when parser fails to recognize BY as a keyword.
-    // (ProcessRecords cannot currently propagate errors).
+    // Sorted mode: validate the BY keyword at position [1].
+    // first[1] is a StringLiteralExpression result — it is always a string
+    // when the parser recognised "BY". A non-string here means the parser
+    // fell through to normal field-expression compilation (e.g., the user
+    // wrote a field reference where "BY" was expected). Result: nil.
     if (!first[1].IsString()) {
       mode_ = Mode::kInvalid;
       return;
     }
-    // Silent error: Returns nil when BY keyword is invalid.
-    // This occurs when user provides incorrect keyword (e.g., "NOTBY").
-    // (ProcessRecords cannot currently propagate errors).
     auto by_upper = expr::FuncUpper(first[1]);
+    // The string is present but is not "BY" (e.g., user wrote "NOTBY").
+    // Result: nil.
     if (by_upper.AsStringView() != "BY") {
       mode_ = Mode::kInvalid;
       return;
     }
 
-    // Parse sort order (default: ASC)
+    // Parse sort direction (default: ASC when nargs=3).
     is_desc_ = false;
     if (nargs == 4) {
-      // Silent error: Returns nil when order argument is not a string.
-      // (ProcessRecords cannot currently propagate errors).
+      // first[3] is a StringLiteralExpression result for ASC/DESC.
+      // A non-string means the parser did not recognise the direction token.
+      // Result: nil.
       if (!first[3].IsString()) {
         mode_ = Mode::kInvalid;
         return;
@@ -357,9 +358,8 @@ class FirstValue : public GroupBy::ReducerInstance {
       if (order_str == "DESC") {
         is_desc_ = true;
       } else if (order_str != "ASC") {
-        // Silent error: Returns nil when order is neither ASC nor DESC.
-        // This occurs when user provides invalid order (e.g., "INVALID").
-        // (ProcessRecords cannot currently propagate errors).
+        // Direction token is present but is neither "ASC" nor "DESC"
+        // (e.g., user wrote "INVALID"). Result: nil.
         mode_ = Mode::kInvalid;
         return;
       }
@@ -378,18 +378,21 @@ class FirstValue : public GroupBy::ReducerInstance {
       ResolveMode(all_values[0]);
     }
 
+    // Invalid argument layout — result remains nil. See class-level comment
+    // for the list of conditions that trigger this path.
     if (mode_ == Mode::kInvalid) {
       return;
     }
 
-    // Simple mode: just take the first value, skip the rest.
+    // Simple mode: return the value from the first record; order is
+    // non-deterministic so there is no point scanning further.
     if (mode_ == Mode::kSimple) {
       result_value_ = all_values[0][0];
       return;
     }
 
-    // Sorted mode: find the record with optimal comparison value.
-    // Tie-breaking: first encountered record wins on equal values.
+    // Sorted mode: scan all records to find the one with the optimal
+    // comparison value. Tie-breaking: first-encountered record wins.
     for (const auto &values : all_values) {
       const expr::Value &comparison_val = values[2];
 
@@ -400,19 +403,19 @@ class FirstValue : public GroupBy::ReducerInstance {
         continue;
       }
 
-      // Skip nil comparison values
+      // Skip records whose comparison value is nil — they cannot win.
       if (comparison_val.IsNil()) {
         continue;
       }
 
-      // Replace stored nil with first non-nil
+      // If the stored comparison value is nil, any non-nil value wins.
       if (comparison_value_.IsNil()) {
         result_value_ = values[0];
         comparison_value_ = comparison_val;
         continue;
       }
 
-      // Strict < / > ensures first-encountered tie-breaking.
+      // Strict < / > preserves first-encountered tie-breaking semantics.
       if (is_desc_ ? (comparison_val > comparison_value_)
                    : (comparison_val < comparison_value_)) {
         result_value_ = values[0];

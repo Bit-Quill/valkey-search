@@ -467,21 +467,11 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
                             self.check(dialect, f"ft.search {key_type}_idx1 * SORTBY {sort_key} {direction} {return_keys} {limit} {wsk}")
 
 
-    def test_first_value_simple_mode(self, key_type, dialect):
-        """Test FIRST_VALUE without BY clause - simple mode.
-        
-        NOTE: All simple mode tests removed due to non-deterministic ordering.
-        When FIRST_VALUE is used without a BY clause, the order of values
-        within each group is undefined, leading to inconsistent results
-        between Redis and Valkey implementations. This is expected behavior
-        but makes compatibility testing impossible.
-        
-        Simple mode should only be used when order doesn't matter or when
-        combined with a BY clause for deterministic ordering.
-        """
-        self.setup_data("sortable numbers", key_type)
-        # All tests removed - see docstring above
-        pass
+    # test_first_value_simple_mode is intentionally omitted.
+    # FIRST_VALUE without a BY clause is non-deterministic: the order of
+    # records within a group depends on retrieval order, which differs between
+    # Redis and Valkey implementations. Compatibility testing requires
+    # deterministic results, so only BY-clause (sorted) mode is tested here.
 
     def test_first_value_by_clause(self, key_type, dialect):
         """Test FIRST_VALUE with BY clause - sorted mode."""
