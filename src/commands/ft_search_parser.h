@@ -30,6 +30,7 @@ struct SearchCommand : public QueryCommand {
   void SendReply(ValkeyModuleCtx *ctx,
                  query::SearchResult &search_result) override;
   absl::Status PostParseQueryString() override;
+  query::SerializationRange GetSerializationRange() const;
 
   // Override to indicate that sorting requires complete results before trimming
   bool RequiresCompleteResults() const override {
