@@ -30,13 +30,11 @@ struct SearchCommand : public QueryCommand {
   void SendReply(ValkeyModuleCtx *ctx,
                  query::SearchResult &search_result) override;
   absl::Status PostParseQueryString() override;
+  query::SerializationRange GetSerializationRange() const;
+
   // By default, FT.SEARCH does not require complete results and can be
   // optimized with LIMIT based trimming. Implement the correct logic here to
   // return true when those clauses are present.
-  bool RequiresCompleteResults() const override { return sortby.has_value(); }
-  query::SerializationRange GetSerializationRange() const;
-
-  // Override to indicate that sorting requires complete results before trimming
   bool RequiresCompleteResults() const override {
     return sortby_parameter.has_value();
   }

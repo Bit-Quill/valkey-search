@@ -7,7 +7,9 @@
 #include "src/commands/ft_aggregate_exec.h"
 
 #include <algorithm>
+#include <cmath>
 #include <queue>
+#include <random>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
@@ -177,6 +179,63 @@ absl::Status SortBy::Execute(RecordSet& records) const {
   return absl::OkStatus();
 }
 
+// RandomSample reducer class - defined here before GroupBy::Execute
+// so it can be instantiated in the Execute method
+class RandomSample : public GroupBy::ReducerInstance {
+ public:
+  void ProcessRecords(const std::vector<ArgVector>& all_values) override {
+    for (const auto& values : all_values) {
+      // Lazily initialize sample_size_ from arg[1] on the first record.
+      if (!initialized_) {
+        constexpr size_t kMaxSampleSize = 1000;
+        auto sz_opt = values[1].AsDouble();
+        double sz = sz_opt.value_or(-1.0);
+        if (!sz_opt.has_value() || sz < 0 || sz != std::floor(sz) ||
+            static_cast<size_t>(sz) > kMaxSampleSize) {
+          error_ = true;
+          return;
+        }
+        sample_size_ = static_cast<size_t>(sz);
+        samples_.reserve(sample_size_);
+        initialized_ = true;
+      }
+      if (error_ || values[0].IsNil()) {
+        continue;
+      }
+      // Reservoir sampling algorithm (Algorithm R)
+      if (seen_count_ < sample_size_) {
+        samples_.push_back(values[0]);
+      } else {
+        std::uniform_int_distribution<size_t> dist(0, seen_count_);
+        size_t j = dist(Rng());
+        if (j < sample_size_) {
+          samples_[j] = values[0];
+        }
+      }
+      seen_count_++;
+    }
+  }
+
+  expr::Value GetResult() const override {
+    return expr::Value(
+        std::make_shared<std::vector<expr::Value>>(samples_));
+  }
+
+ private:
+  // Thread-local RNG shared across all RandomSample instances in a query,
+  // avoiding per-instance std::random_device overhead.
+  static std::mt19937& Rng() {
+    thread_local std::mt19937 rng(std::random_device{}());
+    return rng;
+  }
+
+  bool initialized_ = false;
+  bool error_ = false;
+  std::vector<expr::Value> samples_;
+  size_t sample_size_ = 0;
+  size_t seen_count_ = 0;
+};
+
 absl::Status GroupBy::Execute(RecordSet& records) const {
   DBG << "Executing GROUPBY with groups: " << groups_.size()
       << " and reducers: " << reducers_.size() << "\n";
@@ -210,11 +269,7 @@ absl::Status GroupBy::Execute(RecordSet& records) const {
     if (inserted) {
       DBG << "Was inserted, now have " << groups.size() << " groups\n";
       for (auto& reducer : reducers_) {
-        ArgVector args;
-        for (auto& nargs : reducer.args_) {
-          args.emplace_back(nargs->Evaluate(ctx, *record));
-        }
-        group_it->second.emplace_back(std::move(reducer.info_->make_instance()),
+        group_it->second.emplace_back(reducer.info_->make_instance(),
                                       std::vector<ArgVector>{});
       }
     }
@@ -372,6 +427,8 @@ absl::flat_hash_map<std::string, GroupBy::ReducerInfo> GroupBy::reducerTable{
      GroupBy::ReducerInfo{"COUNT_DISTINCT", 1, 1, &MakeReducer<CountDistinct>}},
     {"MIN", GroupBy::ReducerInfo{"MIN", 1, 1, &MakeReducer<Min>}},
     {"MAX", GroupBy::ReducerInfo{"MAX", 1, 1, &MakeReducer<Max>}},
+    {"RANDOM_SAMPLE",
+     GroupBy::ReducerInfo{"RANDOM_SAMPLE", 2, 2, &MakeReducer<RandomSample>}},
     {"STDDEV", GroupBy::ReducerInfo{"STDDEV", 1, 1, &MakeReducer<Stddev>}},
     {"SUM", GroupBy::ReducerInfo{"SUM", 1, 1, &MakeReducer<Sum>}},
 };
