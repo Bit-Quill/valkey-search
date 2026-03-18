@@ -263,6 +263,35 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             f"ft.aggregate {key_type}_idx1 * load 6 @__key @n1 @n2 @t1 @t2 @t3 groupby 1 @t3 reduce max 1 @n1 as nmax"
         )
         self.check(dialect, f'ft.aggregate {key_type}_idx1 * load 6 @__key @n1 @n2 @t1 @t2 @t3 groupby 1 @t1 reduce max 1 @n2 as nmax')
+    def test_aggregate_groupby_no_load(self, key_type, dialect):
+        """GROUPBY without LOAD: group key fields must appear in output.
+
+        Redis Stack implicitly loads GROUPBY key fields even when no LOAD
+        clause is present.  This test ensures Valkey Search matches that
+        behaviour.
+        """
+        self.setup_data("sortable numbers", key_type)
+        # Tag field as group key, COUNT reducer — the canonical failing case
+        self.check(dialect,
+            f"ft.aggregate {key_type}_idx1 * groupby 1 @t3 reduce count 0 as count"
+        )
+        # Numeric field as group key, COUNT reducer
+        self.check(dialect,
+            f"ft.aggregate {key_type}_idx1 * groupby 1 @n1 reduce count 0 as count"
+        )
+        # Tag field as group key, SUM reducer on a numeric field
+        self.check(dialect,
+            f"ft.aggregate {key_type}_idx1 * groupby 1 @t3 reduce sum 1 @n1 as total"
+        )
+        # Multiple group keys, no LOAD
+        self.check(dialect,
+            f"ft.aggregate {key_type}_idx1 * groupby 2 @t3 @n1 reduce count 0 as count"
+        )
+        # Regression guard: explicit LOAD must still work correctly
+        self.check(dialect,
+            f"ft.aggregate {key_type}_idx1 * load 1 @t3 groupby 1 @t3 reduce count 0 as count"
+        )
+
     def test_aggregate_limit(self, key_type, dialect):
         self.setup_data("sortable numbers", key_type)
         self.check(dialect, f"ft.aggregate {key_type}_idx1  * load 3 @__key @n1 @n2")
