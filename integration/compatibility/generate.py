@@ -468,3 +468,16 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
                         for limit in ["LIMIT 0 5", "LIMIT 2 3", ""]:
                             self.check(dialect, f"ft.search {key_type}_idx1 * SORTBY {sort_key} {direction} {return_keys} {limit} {wsk}")
 
+
+@pytest.mark.parametrize("dialect", [2])
+@pytest.mark.parametrize("key_type", ["json", "hash"])
+class TestSearchCompatibility(BaseCompatibilityTest):
+    ANSWER_FILE_NAME = "search-answers.pickle.gz"
+
+    def test_bare_wildcard(self, key_type, dialect):
+        self.setup_data("sortable numbers", key_type)
+        self.check("ft.search", f"{key_type}_idx1", "*", "DIALECT", str(dialect))
+        self.check("ft.search", f"{key_type}_idx1", "*", "NOCONTENT", "DIALECT", str(dialect))
+        self.check("ft.search", f"{key_type}_idx1", "*", "LIMIT", "0", "3", "DIALECT", str(dialect))
+        self.check("ft.search", f"{key_type}_idx1", "*", "SORTBY", "n1", "ASC", "DIALECT", str(dialect))
+
