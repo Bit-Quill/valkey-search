@@ -568,19 +568,31 @@ absl::StatusOr<std::unique_ptr<GroupBy::Reducer>> FirstValueReducerParser(
     r->output_ =
         std::unique_ptr<Attribute>(dynamic_cast<Attribute *>(output.release()));
   } else {
-    // TODO(https://github.com/valkey-io/valkey-search/issues/965): Workaround
-    // for memory allocator issue causing ostringstream to crash.
-    std::string default_name(r->name_);
-    default_name += '(';
-    for (size_t i = 0; i < arg_texts.size(); ++i) {
-      if (i > 0) default_name += ',';
-      default_name += arg_texts[i];
-    }
+    // Name of a REDUCE with no AS clause. New release 1.3.0 builds it as
+    // "__generated_alias" + reducer + comma-joined args with the leading '@'
+    // stripped, lowercasing the whole thing; the legacy form is
+    // "REDUCER(args)". See COMPATIBILITY.md.
+    std::vector<absl::string_view> alias_args(arg_texts.begin(),
+                                              arg_texts.end());
     if (cnt == 4) {
-      default_name += ',';
-      default_name += r->is_desc_ ? "DESC" : "ASC";
+      alias_args.push_back(r->is_desc_ ? "DESC" : "ASC");
     }
-    default_name += ')';
+    std::string default_name = VALKEY_SEARCH_COMPATIBILITY_FIX(
+        1, 3, 0, "aggregate_reducer_default_alias",
+        [&] {
+          auto name = absl::StrCat(
+              "__generated_alias", r->name_,
+              absl::StrJoin(alias_args, ",",
+                            [](std::string *out, absl::string_view arg) {
+                              absl::StrAppend(out, absl::StripPrefix(arg, "@"));
+                            }));
+          absl::AsciiStrToLower(&name);
+          return name;
+        },
+        [&] {
+          return absl::StrCat(r->name_, "(", absl::StrJoin(alias_args, ","),
+                              ")");
+        });
     VMSDK_ASSIGN_OR_RETURN(auto output,
                            parameters.MakeReference(default_name, true));
     r->output_ =
