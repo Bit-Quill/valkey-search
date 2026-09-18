@@ -19,6 +19,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/functional/any_invocable.h"
+#include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -137,6 +138,11 @@ class SchemaManager {
   std::vector<std::pair<std::string, std::string>> GetAllAliases(
       uint32_t db_num) const ABSL_LOCKS_EXCLUDED(db_to_index_schemas_mutex_);
 
+  // Returns the sorted alias names owned by `index_name` in `db_num`.
+  std::vector<std::string> GetAliasesForIndex(
+      uint32_t db_num, absl::string_view index_name) const
+      ABSL_LOCKS_EXCLUDED(db_to_index_schemas_mutex_);
+
  private:
   absl::Status RemoveAll()
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(db_to_index_schemas_mutex_);
@@ -159,6 +165,20 @@ class SchemaManager {
   // preventing spurious MessageDifferencer mismatches.
   static void NormalizeIndexSchemaProtoDefaults(data_model::IndexSchema &proto);
 
+  // Coordinator-mode helper: fetches the stored IndexSchema proto for
+  // (db_num, index_name) from MetadataManager, normalizes its defaults, applies
+  // `mutate` to it, and re-commits it via CreateEntry. Centralizing the
+  // fetch/normalize/commit boilerplate keeps NormalizeIndexSchemaProtoDefaults
+  // as the single choke point, so an alias-only edit is never misclassified as
+  // a structural change by OnMetadataCallback's MessageDifferencer. The raw
+  // MetadataManager status is surfaced so callers can apply their own
+  // NotFound policy. Must not be called while holding
+  // db_to_index_schemas_mutex_ (CreateEntry reenters via OnMetadataCallback).
+  absl::Status MutateIndexProtoInMetadata(
+      uint32_t db_num, absl::string_view index_name,
+      absl::FunctionRef<void(data_model::IndexSchema &)> mutate)
+      ABSL_LOCKS_EXCLUDED(db_to_index_schemas_mutex_);
+
   absl::StatusOr<std::shared_ptr<IndexSchema>> RemoveIndexSchemaInternal(
       int db_num, absl::string_view name)
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(db_to_index_schemas_mutex_);
@@ -173,6 +193,12 @@ class SchemaManager {
   // Erases all Forward_Alias_Map entries in db_num whose value equals
   // index_name. Used by tombstone handling and RemoveIndexSchemaInternal.
   void EraseAliasesForIndex(uint32_t db_num, absl::string_view index_name)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(db_to_index_schemas_mutex_);
+
+  // Returns the sorted alias names owned by `index_name` in `db_num`, read
+  // from the Forward_Alias_Map (the single source of truth for aliases).
+  std::vector<std::string> GetAliasesForIndexInternal(
+      uint32_t db_num, absl::string_view index_name) const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(db_to_index_schemas_mutex_);
 
   void SubscribeToServerEventsIfNeeded();
@@ -198,6 +224,13 @@ class SchemaManager {
   vmsdk::MainThreadAccessGuard<absl::flat_hash_map<
       uint32_t, absl::flat_hash_map<std::string, std::shared_ptr<IndexSchema>>>>
       staged_db_to_index_schemas_;
+  // Staged aliases captured from loaded index protos, swapped into
+  // db_to_aliases_ atomically on loading ended. IndexSchema does not carry
+  // aliases, so the load path preserves them here (single source of truth).
+  vmsdk::MainThreadAccessGuard<
+      absl::flat_hash_map<uint32_t,
+                          absl::flat_hash_map<std::string, std::string>>>
+      staged_db_to_aliases_;
   absl::StatusOr<std::shared_ptr<IndexSchema>> LookupInternal(
       int db_num, absl::string_view name) const
       ABSL_EXCLUSIVE_LOCKS_REQUIRED(db_to_index_schemas_mutex_);

@@ -986,12 +986,14 @@ TEST_F(AliasListDeterminismTest, PropertyAliasListAlwaysSorted) {
       }
     }
 
-    // After each operation, verify the IndexSchema's aliases are sorted.
+    // After each operation, verify the index's aliases are sorted. Aliases now
+    // live solely in SchemaManager's Forward_Alias_Map.
     auto schema_or =
         SchemaManager::Instance().GetIndexSchema(kDbNum, index_name);
     ASSERT_TRUE(schema_or.ok()) << "Iteration " << iter;
 
-    const auto &aliases = schema_or.value()->GetAliases();
+    const auto aliases =
+        SchemaManager::Instance().GetAliasesForIndex(kDbNum, index_name);
 
     // Verify lexicographic ascending order.
     for (size_t i = 1; i < aliases.size(); ++i) {
@@ -1148,7 +1150,8 @@ TEST_F(AliasUpdateReachabilityTest,
     auto schema_x_before =
         SchemaManager::Instance().GetIndexSchema(kDbNum, index_x);
     ASSERT_TRUE(schema_x_before.ok()) << "Iteration " << iter;
-    const auto &x_aliases_before = schema_x_before.value()->GetAliases();
+    const auto x_aliases_before =
+        SchemaManager::Instance().GetAliasesForIndex(kDbNum, index_x);
     ASSERT_NE(
         std::find(x_aliases_before.begin(), x_aliases_before.end(), alias),
         x_aliases_before.end())
@@ -1165,14 +1168,16 @@ TEST_F(AliasUpdateReachabilityTest,
     auto schema_x_after =
         SchemaManager::Instance().GetIndexSchema(kDbNum, index_x);
     ASSERT_TRUE(schema_x_after.ok()) << "Iteration " << iter;
-    const auto &x_aliases_after = schema_x_after.value()->GetAliases();
+    const auto x_aliases_after =
+        SchemaManager::Instance().GetAliasesForIndex(kDbNum, index_x);
     bool alias_in_x = std::find(x_aliases_after.begin(), x_aliases_after.end(),
                                 alias) != x_aliases_after.end();
 
     auto schema_y_after =
         SchemaManager::Instance().GetIndexSchema(kDbNum, index_y);
     ASSERT_TRUE(schema_y_after.ok()) << "Iteration " << iter;
-    const auto &y_aliases_after = schema_y_after.value()->GetAliases();
+    const auto y_aliases_after =
+        SchemaManager::Instance().GetAliasesForIndex(kDbNum, index_y);
     bool alias_in_y = std::find(y_aliases_after.begin(), y_aliases_after.end(),
                                 alias) != y_aliases_after.end();
 
@@ -2187,7 +2192,7 @@ TEST_F(CrossIndexAliasConflictTest, HigherVersionWins) {
 
   auto schema_z = SchemaManager::Instance().GetIndexSchema(kDbNum, "idx_z");
   ASSERT_TRUE(schema_z.ok());
-  auto z_aliases = schema_z.value()->GetAliases();
+  auto z_aliases = SchemaManager::Instance().GetAliasesForIndex(kDbNum, "idx_z");
   EXPECT_TRUE(std::find(z_aliases.begin(), z_aliases.end(), "shared_alias") ==
               z_aliases.end());
 }
@@ -2235,7 +2240,7 @@ TEST_F(CrossIndexAliasConflictTest, LoserAliasVectorCleaned) {
 
   auto schema_a = SchemaManager::Instance().GetIndexSchema(kDbNum, "idx_a");
   ASSERT_TRUE(schema_a.ok());
-  auto a_aliases = schema_a.value()->GetAliases();
+  auto a_aliases = SchemaManager::Instance().GetAliasesForIndex(kDbNum, "idx_a");
   EXPECT_EQ(a_aliases.size(), 1);
   EXPECT_EQ(a_aliases[0], "only_a");
 }
@@ -2289,6 +2294,89 @@ TEST_F(CrossIndexAliasConflictTest, NoConflictDifferentAliasesCoexist) {
   EXPECT_EQ(aliases[0].second, "idx_a");
   EXPECT_EQ(aliases[1].first, "alias_b");
   EXPECT_EQ(aliases[1].second, "idx_b");
+}
+
+// FT.CREATE must be rejected when the requested index name collides with an
+// existing alias: GetIndexSchema resolves real indexes before aliases, so
+// silently allowing the create would shadow the alias and leave a dangling,
+// unreachable Forward_Alias_Map entry.
+TEST_F(CrossIndexAliasConflictTest, CreateIndexWithAliasNameRejected) {
+  CreateIndex("idx_a");
+  SimulateAliasCallback("idx_a", {"shared_name"});
+
+  data_model::IndexSchema proto;
+  proto.set_name("shared_name");
+  proto.set_db_num(kDbNum);
+  proto.add_subscribed_key_prefixes("prefix_shared_name:");
+  proto.set_attribute_data_type(data_model::ATTRIBUTE_DATA_TYPE_HASH);
+  auto *attr = proto.add_attributes();
+  attr->set_alias("attr_shared_name");
+  attr->set_identifier("field_shared_name");
+  auto *vec = attr->mutable_index()->mutable_vector_index();
+  vec->set_dimension_count(4);
+  vec->set_normalize(false);
+  vec->set_distance_metric(data_model::DISTANCE_METRIC_COSINE);
+  vec->set_vector_data_type(data_model::VECTOR_DATA_TYPE_FLOAT32);
+  vec->set_initial_cap(10);
+  auto *hnsw = vec->mutable_hnsw_algorithm();
+  hnsw->set_m(16);
+  hnsw->set_ef_construction(200);
+  hnsw->set_ef_runtime(10);
+
+  auto result = SchemaManager::Instance().CreateIndexSchema(&fake_ctx_, proto);
+  ASSERT_FALSE(result.ok());
+  EXPECT_EQ(result.status().code(), absl::StatusCode::kAlreadyExists);
+  EXPECT_THAT(result.status().message(),
+              testing::HasSubstr(
+                  "Index name 'shared_name' conflicts with an existing "
+                  "alias of the same name"));
+
+  // The alias must still resolve to the original index, and no index named
+  // "shared_name" should have been created.
+  auto schema = SchemaManager::Instance().GetIndexSchema(kDbNum, "idx_a");
+  ASSERT_TRUE(schema.ok());
+  auto idx_a_aliases =
+      SchemaManager::Instance().GetAliasesForIndex(kDbNum, "idx_a");
+  ASSERT_EQ(idx_a_aliases.size(), 1);
+  EXPECT_EQ(idx_a_aliases[0], "shared_name");
+
+  auto rejected_schema =
+      SchemaManager::Instance().GetIndexSchema(kDbNum, "shared_name");
+  ASSERT_TRUE(rejected_schema.ok());
+  EXPECT_EQ(rejected_schema.value(), schema.value());
+}
+
+// An index is exempt from its own alias-name collision check when it
+// declares that name as one of its own aliases in the proto.
+TEST_F(CrossIndexAliasConflictTest, CreateIndexSelfDeclaredAliasNameAllowed) {
+  CreateIndex("idx_a");
+  SimulateAliasCallback("idx_a", {"self_name"});
+
+  data_model::IndexSchema proto;
+  proto.set_name("self_name");
+  proto.set_db_num(kDbNum);
+  proto.add_subscribed_key_prefixes("prefix_self_name:");
+  proto.set_attribute_data_type(data_model::ATTRIBUTE_DATA_TYPE_HASH);
+  proto.add_aliases("self_name");
+  auto *attr = proto.add_attributes();
+  attr->set_alias("attr_self_name");
+  attr->set_identifier("field_self_name");
+  auto *vec = attr->mutable_index()->mutable_vector_index();
+  vec->set_dimension_count(4);
+  vec->set_normalize(false);
+  vec->set_distance_metric(data_model::DISTANCE_METRIC_COSINE);
+  vec->set_vector_data_type(data_model::VECTOR_DATA_TYPE_FLOAT32);
+  vec->set_initial_cap(10);
+  auto *hnsw = vec->mutable_hnsw_algorithm();
+  hnsw->set_m(16);
+  hnsw->set_ef_construction(200);
+  hnsw->set_ef_runtime(10);
+
+  // "self_name" is currently owned by idx_a as an alias, but this proto
+  // both names itself "self_name" AND declares "self_name" as its own
+  // alias, so the collision guard must exempt it.
+  auto result = SchemaManager::Instance().CreateIndexSchema(&fake_ctx_, proto);
+  EXPECT_TRUE(result.ok()) << result.status();
 }
 
 }  // namespace

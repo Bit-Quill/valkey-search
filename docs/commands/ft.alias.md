@@ -1,6 +1,11 @@
 Aliases provide alternative names for indexes. Once created, an alias can be used in place of the real index name in `FT.SEARCH`, `FT.AGGREGATE`, `FT.INFO`, and `FT.DROPINDEX` commands. Multiple aliases can point to the same index. Alias definitions are global and stored as part of the aliased index definition.
 
-Alias names must be non-empty strings. The target index name must refer to a real index, not another alias (alias chaining is not supported). For single-slot indexes (those with a `{hashtag}` in the name), aliases must contain the same hashtag to ensure correct cluster slot routing. An alias name may match an existing index name; in that case the real index takes precedence during name resolution until it is dropped, at which point the alias becomes effective.
+Alias names must be non-empty strings. The target index name must refer to a real index, not another alias (alias chaining is not supported). For single-slot indexes (those with a `{hashtag}` in the name), aliases must contain the same hashtag to ensure correct cluster slot routing.
+
+Name resolution always prefers a real index over an alias of the same name. The two possible orderings of a name collision are handled differently:
+
+- **Alias created first, then an index with the same name via `FT.CREATE`:** the `FT.CREATE` is rejected with an error, because allowing it would silently shadow the alias and leave the alias unreachable. Drop or reassign the alias first.
+- **Index created first, then an alias with the same name via `FT.ALIASADD`/`FT.ALIASUPDATE`:** the alias is registered, but the real index takes precedence during name resolution until that index is dropped, at which point the alias becomes effective.
 
 # FT.ALIASADD
 
@@ -114,6 +119,7 @@ FT.ALIASLIST
 
 # Behaviour Notes
 
+- Creating an index (`FT.CREATE`) with a name that matches an existing alias is rejected; drop or reassign the alias first.
 - Dropping an index (`FT.DROPINDEX`) also removes all aliases that point to it.
 - `FT.DROPINDEX` can be called with an alias name — it resolves to the underlying index and drops it (along with all of its aliases).
 - `FT._LIST` returns only real index names; aliases are never included.

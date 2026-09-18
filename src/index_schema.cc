@@ -333,8 +333,6 @@ IndexSchema::IndexSchema(ValkeyModuleCtx *ctx,
       stop_words_(index_schema_proto.stop_words().begin(),
                   index_schema_proto.stop_words().end()),
       skip_initial_scan_(index_schema_proto.skip_initial_scan()),
-      aliases_(index_schema_proto.aliases().begin(),
-               index_schema_proto.aliases().end()),
       filter_expression_str_(
           index_schema_proto.has_filter() ? index_schema_proto.filter() : ""),
       min_stem_size_(index_schema_proto.min_stem_size() > 0
@@ -1287,7 +1285,8 @@ IndexSchema::GetSortedAttributes() const {
   return sorted;
 }
 
-void IndexSchema::RespondWithInfo(ValkeyModuleCtx *ctx) const {
+void IndexSchema::RespondWithInfo(ValkeyModuleCtx *ctx,
+                                 std::vector<std::string> aliases) const {
   // The index_definition block gained the score_field pair and switched
   // default_score from a hardcoded "1" bulk string to the configured score as
   // a double in 1.3.0. Pre-1.3.0: a 6-element array with no score_field and a
@@ -1314,10 +1313,9 @@ void IndexSchema::RespondWithInfo(ValkeyModuleCtx *ctx) const {
   ValkeyModule_ReplyWithSimpleString(ctx, name_.data());
 
   ValkeyModule_ReplyWithSimpleString(ctx, "aliases");
-  std::vector<std::string> sorted_aliases(aliases_.begin(), aliases_.end());
-  std::sort(sorted_aliases.begin(), sorted_aliases.end());
-  ValkeyModule_ReplyWithArray(ctx, sorted_aliases.size());
-  for (const auto &alias : sorted_aliases) {
+  std::sort(aliases.begin(), aliases.end());
+  ValkeyModule_ReplyWithArray(ctx, aliases.size());
+  for (const auto &alias : aliases) {
     ValkeyModule_ReplyWithSimpleString(ctx, alias.c_str());
   }
 
@@ -1432,7 +1430,8 @@ void IndexSchema::RespondWithInfo(ValkeyModuleCtx *ctx) const {
   }
 }
 
-std::unique_ptr<data_model::IndexSchema> IndexSchema::ToProto() const {
+std::unique_ptr<data_model::IndexSchema> IndexSchema::ToProto(
+    std::vector<std::string> aliases) const {
   auto index_schema_proto = std::make_unique<data_model::IndexSchema>();
   index_schema_proto->set_name(this->name_);
   index_schema_proto->set_db_num(db_num_);
@@ -1448,8 +1447,9 @@ std::unique_ptr<data_model::IndexSchema> IndexSchema::ToProto() const {
   index_schema_proto->mutable_stop_words()->Assign(stop_words_.begin(),
                                                    stop_words_.end());
   index_schema_proto->set_skip_initial_scan(skip_initial_scan_);
-  index_schema_proto->mutable_aliases()->Assign(aliases_.begin(),
-                                                aliases_.end());
+  std::sort(aliases.begin(), aliases.end());
+  index_schema_proto->mutable_aliases()->Assign(aliases.begin(),
+                                                aliases.end());
   index_schema_proto->set_score(score_);
   if (score_field_.has_value()) {
     index_schema_proto->set_score_field(score_field_.value());
@@ -1483,7 +1483,8 @@ static absl::Status SaveSupplementalSection(
   return write_section(RDBChunkOutputStream(rdb));
 }
 
-absl::Status IndexSchema::RDBSave(SafeRDB *rdb) const {
+absl::Status IndexSchema::RDBSave(SafeRDB *rdb,
+                                  std::vector<std::string> aliases) const {
   // Drain mutation queue before save if configured and queue is non-empty.
   // In forked child (BGSave), the queue is a frozen snapshot that will never
   // drain, so skip it instead.
@@ -1501,7 +1502,7 @@ absl::Status IndexSchema::RDBSave(SafeRDB *rdb) const {
       << vmsdk::config::RedactIfNeeded(name_) << " Saving in version "
       << (RDBWriteV2() ? "2" : "1") << " format";
 
-  auto index_schema_proto = ToProto();
+  auto index_schema_proto = ToProto(std::move(aliases));
   auto rdb_section = std::make_unique<data_model::RDBSection>();
   rdb_section->set_type(data_model::RDB_SECTION_INDEX_SCHEMA);
   rdb_section->set_allocated_index_schema_contents(
@@ -2392,10 +2393,6 @@ absl::StatusOr<vmsdk::ValkeyVersion> IndexSchema::GetMinVersion(
   } else {
     return kRelease10;
   }
-}
-
-void IndexSchema::SetAliases(std::vector<std::string> aliases) {
-  aliases_ = std::move(aliases);
 }
 
 absl::StatusOr<std::unique_ptr<expr::Expression::AttributeReference>>
