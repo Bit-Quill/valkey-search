@@ -384,27 +384,19 @@ absl::Status SchemaManager::CreateIndexSchemaInternal(
     return GenerateIndexAlreadyExistsError(db_num, index_schema_proto.name());
   }
 
-  // Reject creating an index whose name collides with an existing alias in
-  // this db. GetIndexSchema resolves real indexes before aliases, so allowing
-  // the create would silently shadow the alias and leave a dangling,
-  // unreachable Forward_Alias_Map entry. An index the new proto declares as one
-  // of its own aliases is exempt (the alias is being (re)assigned to it).
+  // If the name collides with an existing alias in this db, log a warning:
+  // GetIndexSchema resolves real indexes before aliases, so the alias becomes
+  // unreachable until it is dropped or reassigned. This mirrors AddAlias,
+  // which allows an alias to shadow a real index the same way with only a
+  // warning, so both directions of the collision are handled consistently.
   {
     auto db_alias_it = db_to_aliases_.find(db_num);
     if (db_alias_it != db_to_aliases_.end() &&
         db_alias_it->second.contains(name)) {
-      bool self_declared = false;
-      for (const auto &alias : index_schema_proto.aliases()) {
-        if (alias == name) {
-          self_declared = true;
-          break;
-        }
-      }
-      if (!self_declared) {
-        return absl::AlreadyExistsError(absl::StrCat(
-            "Index name '", name,
-            "' conflicts with an existing alias of the same name"));
-      }
+      VMSDK_LOG(WARNING, detached_ctx_.get())
+          << "Index '" << name
+          << "' shadows an existing alias of the same name in db " << db_num
+          << "; the alias is unreachable until dropped or reassigned";
     }
   }
 
@@ -469,30 +461,6 @@ SchemaManager::CreateIndexSchema(
       return GenerateIndexAlreadyExistsError(
           static_cast<int>(index_schema_proto.db_num()),
           index_schema_proto.name());
-    }
-
-    // Reject up front if the name collides with an existing alias, so the
-    // client gets a synchronous error. CreateIndexSchemaInternal enforces the
-    // same invariant when OnMetadataCallback later applies the entry, but that
-    // path cannot report the failure back to the caller.
-    {
-      absl::MutexLock lock(&db_to_index_schemas_mutex_);
-      auto db_alias_it = db_to_aliases_.find(index_schema_proto.db_num());
-      if (db_alias_it != db_to_aliases_.end() &&
-          db_alias_it->second.contains(index_schema_proto.name())) {
-        bool self_declared = false;
-        for (const auto &alias : index_schema_proto.aliases()) {
-          if (alias == index_schema_proto.name()) {
-            self_declared = true;
-            break;
-          }
-        }
-        if (!self_declared) {
-          return absl::AlreadyExistsError(absl::StrCat(
-              "Index name '", index_schema_proto.name(),
-              "' conflicts with an existing alias of the same name"));
-        }
-      }
     }
 
     // Normalize defaults so the stored proto matches what ToProto() would

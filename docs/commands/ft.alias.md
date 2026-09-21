@@ -2,9 +2,9 @@ Aliases provide alternative names for indexes. Once created, an alias can be use
 
 Alias names must be non-empty strings. The target index name must refer to a real index, not another alias (alias chaining is not supported). For single-slot indexes (those with a `{hashtag}` in the name), aliases must contain the same hashtag to ensure correct cluster slot routing.
 
-Name resolution always prefers a real index over an alias of the same name. The two possible orderings of a name collision are handled differently:
+Name resolution always prefers a real index over an alias of the same name. This holds for both possible orderings of a name collision, and neither is rejected — the loser is a warning-logged, unreachable name until the collision is resolved:
 
-- **Alias created first, then an index with the same name via `FT.CREATE`:** the `FT.CREATE` is rejected with an error, because allowing it would silently shadow the alias and leave the alias unreachable. Drop or reassign the alias first.
+- **Alias created first, then an index with the same name via `FT.CREATE`:** the `FT.CREATE` succeeds. A warning is logged, and the alias becomes unreachable (shadowed by the index) until it is dropped or reassigned.
 - **Index created first, then an alias with the same name via `FT.ALIASADD`/`FT.ALIASUPDATE`:** the alias is registered, but the real index takes precedence during name resolution until that index is dropped, at which point the alias becomes effective.
 
 # FT.ALIASADD
@@ -119,7 +119,7 @@ FT.ALIASLIST
 
 # Behaviour Notes
 
-- Creating an index (`FT.CREATE`) with a name that matches an existing alias is rejected; drop or reassign the alias first.
+- Creating an index (`FT.CREATE`) with a name that matches an existing alias succeeds; the alias is shadowed and unreachable until it is dropped or reassigned. A warning is logged.
 - Dropping an index (`FT.DROPINDEX`) also removes all aliases that point to it.
 - `FT.DROPINDEX` can be called with an alias name — it resolves to the underlying index and drops it (along with all of its aliases).
 - `FT._LIST` returns only real index names; aliases are never included.

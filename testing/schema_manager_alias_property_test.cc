@@ -2296,11 +2296,13 @@ TEST_F(CrossIndexAliasConflictTest, NoConflictDifferentAliasesCoexist) {
   EXPECT_EQ(aliases[1].second, "idx_b");
 }
 
-// FT.CREATE must be rejected when the requested index name collides with an
-// existing alias: GetIndexSchema resolves real indexes before aliases, so
-// silently allowing the create would shadow the alias and leave a dangling,
-// unreachable Forward_Alias_Map entry.
-TEST_F(CrossIndexAliasConflictTest, CreateIndexWithAliasNameRejected) {
+// FT.CREATE with a name that collides with an existing alias must succeed:
+// GetIndexSchema resolves real indexes before aliases, so the new index
+// shadows the alias rather than being blocked by it. The alias itself is
+// left registered (unreachable until dropped or reassigned) instead of
+// being torn down, mirroring how AddAlias allows an alias to shadow a real
+// index in the opposite ordering.
+TEST_F(CrossIndexAliasConflictTest, CreateIndexShadowsExistingAliasName) {
   CreateIndex("idx_a");
   SimulateAliasCallback("idx_a", {"shared_name"});
 
@@ -2324,59 +2326,22 @@ TEST_F(CrossIndexAliasConflictTest, CreateIndexWithAliasNameRejected) {
   hnsw->set_ef_runtime(10);
 
   auto result = SchemaManager::Instance().CreateIndexSchema(&fake_ctx_, proto);
-  ASSERT_FALSE(result.ok());
-  EXPECT_EQ(result.status().code(), absl::StatusCode::kAlreadyExists);
-  EXPECT_THAT(result.status().message(),
-              testing::HasSubstr(
-                  "Index name 'shared_name' conflicts with an existing "
-                  "alias of the same name"));
+  EXPECT_TRUE(result.ok()) << result.status();
 
-  // The alias must still resolve to the original index, and no index named
-  // "shared_name" should have been created.
-  auto schema = SchemaManager::Instance().GetIndexSchema(kDbNum, "idx_a");
-  ASSERT_TRUE(schema.ok());
+  // The new index must be reachable by its own name, and distinct from the
+  // index the alias still (invisibly) points to.
+  auto new_schema =
+      SchemaManager::Instance().GetIndexSchema(kDbNum, "shared_name");
+  ASSERT_TRUE(new_schema.ok());
+  auto old_schema = SchemaManager::Instance().GetIndexSchema(kDbNum, "idx_a");
+  ASSERT_TRUE(old_schema.ok());
+  EXPECT_NE(new_schema.value(), old_schema.value());
+
+  // The alias is still registered against idx_a, just shadowed.
   auto idx_a_aliases =
       SchemaManager::Instance().GetAliasesForIndex(kDbNum, "idx_a");
   ASSERT_EQ(idx_a_aliases.size(), 1);
   EXPECT_EQ(idx_a_aliases[0], "shared_name");
-
-  auto rejected_schema =
-      SchemaManager::Instance().GetIndexSchema(kDbNum, "shared_name");
-  ASSERT_TRUE(rejected_schema.ok());
-  EXPECT_EQ(rejected_schema.value(), schema.value());
-}
-
-// An index is exempt from its own alias-name collision check when it
-// declares that name as one of its own aliases in the proto.
-TEST_F(CrossIndexAliasConflictTest, CreateIndexSelfDeclaredAliasNameAllowed) {
-  CreateIndex("idx_a");
-  SimulateAliasCallback("idx_a", {"self_name"});
-
-  data_model::IndexSchema proto;
-  proto.set_name("self_name");
-  proto.set_db_num(kDbNum);
-  proto.add_subscribed_key_prefixes("prefix_self_name:");
-  proto.set_attribute_data_type(data_model::ATTRIBUTE_DATA_TYPE_HASH);
-  proto.add_aliases("self_name");
-  auto *attr = proto.add_attributes();
-  attr->set_alias("attr_self_name");
-  attr->set_identifier("field_self_name");
-  auto *vec = attr->mutable_index()->mutable_vector_index();
-  vec->set_dimension_count(4);
-  vec->set_normalize(false);
-  vec->set_distance_metric(data_model::DISTANCE_METRIC_COSINE);
-  vec->set_vector_data_type(data_model::VECTOR_DATA_TYPE_FLOAT32);
-  vec->set_initial_cap(10);
-  auto *hnsw = vec->mutable_hnsw_algorithm();
-  hnsw->set_m(16);
-  hnsw->set_ef_construction(200);
-  hnsw->set_ef_runtime(10);
-
-  // "self_name" is currently owned by idx_a as an alias, but this proto
-  // both names itself "self_name" AND declares "self_name" as its own
-  // alias, so the collision guard must exempt it.
-  auto result = SchemaManager::Instance().CreateIndexSchema(&fake_ctx_, proto);
-  EXPECT_TRUE(result.ok()) << result.status();
 }
 
 }  // namespace
