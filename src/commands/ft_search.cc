@@ -99,6 +99,29 @@ void ReplyScoreTopLevel(ValkeyModuleCtx* ctx, float score) {
 std::string GetSortKeyValue(const indexes::Neighbor& neighbor,
                             const SearchCommand& command);
 
+// If the SORTBY field matches a VR distance alias, returns the formatted
+// distance for that neighbor's corresponding vr_scores slot (to be emitted
+// with the numeric '#' prefix for WITHSORTKEYS). Returns std::nullopt when the
+// SORTBY field is not a VR alias, so callers fall back to GetSortKeyValue().
+// vr_fields is the CollectVrScoreFields() result (index i = name for slot i).
+std::optional<std::string> GetVrSortKeyValue(
+    const indexes::Neighbor& neighbor, const SearchCommand& command,
+    const std::vector<std::string>& vr_fields) {
+  if (!command.sortby_parameter.has_value()) {
+    return std::nullopt;
+  }
+  for (size_t slot = 0; slot < vr_fields.size(); ++slot) {
+    if (!vr_fields[slot].empty() &&
+        vr_fields[slot] == command.sortby_parameter->field) {
+      float distance = (slot < neighbor.vr_scores.size())
+                           ? neighbor.vr_scores[slot]
+                           : neighbor.distance;
+      return absl::StrFormat("%.12g", distance);
+    }
+  }
+  return std::nullopt;
+}
+
 // WITHSORTKEYS prefixes each sort key by the SORTBY field's declared type:
 // '#' for NUMERIC fields, '$' for everything else (RediSearch-compatible).
 bool IsSortByFieldNumeric(const SearchCommand& command,
@@ -158,10 +181,23 @@ void SerializeNeighbors(ValkeyModuleCtx* ctx,
       ReplyScoreTopLevel(ctx, has_relevance ? neighbors[i].score : 0.0f);
     }
     if (emit_sort_key) {
-      std::string value = sort_by_vec_score
-                              ? absl::StrFormat("%.12g", neighbors[i].distance)
-                              : GetSortKeyValue(neighbors[i], parameters);
-      std::string prefixed_value = sort_key_prefix + value;
+      // A SORTBY on a VR distance alias must emit the formatted distance from
+      // the matching vr_scores slot with the numeric '#' prefix; it is not
+      // present in attribute_contents so GetSortKeyValue() would miss it.
+      std::optional<std::string> vr_value =
+          GetVrSortKeyValue(neighbors[i], parameters, vr_fields);
+      std::string value;
+      std::string prefix;
+      if (vr_value.has_value()) {
+        value = *vr_value;
+        prefix = "#";
+      } else {
+        value = sort_by_vec_score
+                    ? absl::StrFormat("%.12g", neighbors[i].distance)
+                    : GetSortKeyValue(neighbors[i], parameters);
+        prefix = sort_key_prefix;
+      }
+      std::string prefixed_value = prefix + value;
       ValkeyModule_ReplyWithString(
           ctx, vmsdk::MakeUniqueValkeyString(prefixed_value).get());
     }
@@ -309,10 +345,23 @@ void SerializeNonVectorNeighbors(ValkeyModuleCtx* ctx,
     }
 
     // Prefix the sort key: '#' for NUMERIC fields, '$' for string fields
-    // (RediSearch-compatible).
+    // (RediSearch-compatible). A SORTBY on a VR distance alias must emit the
+    // formatted distance from the matching vr_scores slot with the numeric
+    // '#' prefix; it lives in vr_scores, not attribute_contents, so
+    // GetSortKeyValue() would return "".
     if (command.with_sort_keys) {
-      std::string sort_key_value = GetSortKeyValue(neighbors[i], command);
-      std::string value_with_prefix = prefix_str + sort_key_value;
+      std::optional<std::string> vr_value =
+          GetVrSortKeyValue(neighbors[i], command, vr_fields);
+      std::string sort_key_value;
+      std::string prefix;
+      if (vr_value.has_value()) {
+        sort_key_value = *vr_value;
+        prefix = "#";
+      } else {
+        sort_key_value = GetSortKeyValue(neighbors[i], command);
+        prefix = prefix_str;
+      }
+      std::string value_with_prefix = prefix + sort_key_value;
       ValkeyModule_ReplyWithString(
           ctx, vmsdk::MakeUniqueValkeyString(value_with_prefix).get());
     }
