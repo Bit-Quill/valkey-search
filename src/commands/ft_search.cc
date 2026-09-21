@@ -514,9 +514,9 @@ void ApplySorting(std::vector<indexes::Neighbor>& neighbors,
       // Use the distance for the resolved slot; fall back to distance if the
       // slot is out of range (should not occur in practice for VR queries).
       float dist_a = (sort_slot < a.vr_scores.size()) ? a.vr_scores[sort_slot]
-                                                       : a.distance;
+                                                      : a.distance;
       float dist_b = (sort_slot < b.vr_scores.size()) ? b.vr_scores[sort_slot]
-                                                       : b.distance;
+                                                      : b.distance;
       if (dist_a < dist_b) {
         return sortby.order == query::SortOrder::kAscending;
       }

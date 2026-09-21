@@ -224,8 +224,8 @@ FilterVerification VerifyFilter(
   // corrupt WITHSCORES results for any document that mutates between search
   // and content fetch.  KNN queries are already excluded (IsNonVectorQuery()
   // is false for them); this guard adds the VR exclusion.
-  const bool recompute_score = parameters.IsNonVectorQuery() &&
-                               parameters.num_vr_predicates == 0;
+  const bool recompute_score =
+      parameters.IsNonVectorQuery() && parameters.num_vr_predicates == 0;
   auto recompute = [&](EvaluationResult &result) -> FilterVerification {
     if (!result.matches || !recompute_score) {
       return {result.matches, std::nullopt};
