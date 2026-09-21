@@ -654,16 +654,17 @@ void SearchCommand::SendReply(ValkeyModuleCtx* ctx,
   // Increment success counter.
   ++Metrics::GetStats().query_successful_requests_cnt;
 
-  // Apply sorting before any early reply paths that might skip it.
-  // This ensures correct ordering for NOCONTENT queries too.
-  ApplySorting(search_result.neighbors, *this);
-
-  // 1. Handle early reply scenarios
+  // 1. Handle early reply scenarios.
+  // These paths do not need pre-sorted neighbors: ShouldReturnNoResults emits
+  // only the count, and the NoProcessingRequired NOCONTENT path is only taken
+  // when RequiresCompleteResults() is false (no SORTBY and no VR predicates) —
+  // the exact case where ApplySorting is a no-op. So sorting can safely run
+  // after this check.
   if (HandleEarlyReplyScenarios(ctx, search_result, *this)) {
     return;
   }
 
-  // 2. Process neighbors for the query
+  // 2. Process neighbors for the query, removing filtered/invalid neighbors.
   auto status = ProcessNeighborsForQuery(ctx, search_result, *this);
   if (!status.ok()) {
     ++Metrics::GetStats().query_failed_requests_cnt;
@@ -671,7 +672,12 @@ void SearchCommand::SendReply(ValkeyModuleCtx* ctx,
     return;
   }
 
-  // 3. Serialize neighbors based on query type
+  // 3. Sort the final, filtered neighbor set. Sorting after
+  // ProcessNeighborsForQuery ensures the order reflects the neighbors that
+  // will actually be serialized, rather than a superset that is then trimmed.
+  ApplySorting(search_result.neighbors, *this);
+
+  // 4. Serialize neighbors based on query type
   if (no_content) {
     SendReplyNoContent(ctx, search_result, *this);
   } else if (IsNonVectorQuery()) {
