@@ -111,11 +111,11 @@ message Predicate {
     SuffixPredicate suffix = 8;
     InfixPredicate infix = 9;
     FuzzyPredicate fuzzy = 10;
-    VectorRangePredicate vector_range = 11;
+    VectorRangePredicate vector_range = 12;
   }
   // Query-modifier weight ($weight:N). Defaults to 1.0 when unset so scoring on
   // the shard matches standalone. Applies to leaf and composed predicates.
-  optional float weight = 12;
+  optional float weight = 11;
 }
 
 message ReturnParameter {
@@ -172,8 +172,8 @@ message NeighborEntry {
   repeated AttributeContentEntry attribute_contents = 3;
   // VR distance values in score_slot order. Only set when the query contains
   // VECTOR_RANGE predicates with $yield_distance_as aliases.
-  repeated float vr_scores = 4;
-  float score = 5;
+  repeated float vr_scores = 5;
+  float score = 4;
 }
 
 message SearchIndexPartitionResponse {

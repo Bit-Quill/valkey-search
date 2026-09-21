@@ -30,13 +30,14 @@ def compute_sources_hash():
     covered by the staleness check.
     """
     h = hashlib.sha256()
-    for dirpath, _dirnames, filenames in os.walk(_COMPAT_DIR):
+    for dirpath, dirnames, filenames in os.walk(_COMPAT_DIR):
+        dirnames.sort()  # in-place: makes os.walk traversal order deterministic
         for fname in sorted(filenames):
             if not fname.endswith(".py"):
                 continue
             full = os.path.join(dirpath, fname)
             rel = os.path.relpath(full, _COMPAT_DIR)
-            h.update(rel.encode("utf-8"))
+            h.update(rel.replace(os.sep, "/").encode("utf-8"))  # normalize separator
             h.update(b"\0")
             with open(full, "rb") as f:
                 h.update(f.read())

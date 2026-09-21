@@ -218,7 +218,14 @@ FilterVerification VerifyFilter(
   // (never TextIterator::GetScore) and numeric/tag leaves via 1.0 * weight,
   // identical to ScoreNode. Vector queries are skipped because there
   // Neighbor.score is a KNN distance, not a relevance score.
-  const bool recompute_score = parameters.IsNonVectorQuery();
+  // Recompute relevance score only for non-vector queries that have NO VR
+  // predicates.  VR distances are computed by the index at search time and
+  // stored in Neighbor.score; overwriting them here with value_or(0.0f) would
+  // corrupt WITHSCORES results for any document that mutates between search
+  // and content fetch.  KNN queries are already excluded (IsNonVectorQuery()
+  // is false for them); this guard adds the VR exclusion.
+  const bool recompute_score = parameters.IsNonVectorQuery() &&
+                               parameters.num_vr_predicates == 0;
   auto recompute = [&](EvaluationResult &result) -> FilterVerification {
     if (!result.matches || !recompute_score) {
       return {result.matches, std::nullopt};

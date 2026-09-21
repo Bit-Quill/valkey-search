@@ -838,7 +838,13 @@ absl::StatusOr<std::vector<indexes::Neighbor>> SearchVectorRangeQuery(
       if (eval_result.matches) {
         if (neighbors.size() >= max_keys) {
           fetch_limited = true;
-          break;
+          // For VR queries we must collect ALL candidates within the radius
+          // before sorting by distance.  Breaking here would return the first
+          // max_keys entries in fetcher order, not the closest ones.
+          // For non-VR queries the limit is a hard cap — break as before.
+          if (parameters.num_vr_predicates == 0) {
+            break;
+          }
         }
         // Non-VR OR-branch matches (e.g. a tag-only match in
         // "@vec:[VECTOR_RANGE ...] | @tag:{B}") have no vector-range distance.
@@ -2176,6 +2182,18 @@ static void PopulateVrScoresForNeighbors(
       })
       .IgnoreError();
 
+  // Resolve each slot's VectorBase* once — it depends only on the slot, not
+  // on the neighbor.  Hoisting avoids O(N×S) GetIndex + dynamic_cast calls.
+  std::vector<indexes::VectorBase *> vr_indexes(vr_preds.size(), nullptr);
+  for (size_t slot = 0; slot < vr_preds.size(); ++slot) {
+    if (!vr_preds[slot]) continue;
+    auto index_result =
+        parameters.index_schema->GetIndex(vr_preds[slot]->GetAlias());
+    if (!index_result.ok()) continue;
+    vr_indexes[slot] =
+        dynamic_cast<indexes::VectorBase *>(index_result.value().get());
+  }
+
   // For each neighbor, compute the distance from each VR predicate's query
   // vector to the neighbor's stored vector and store in vr_scores[slot].
   // If the distance exceeds the predicate's radius, store the sentinel
@@ -2189,10 +2207,7 @@ static void PopulateVrScoresForNeighbors(
     for (size_t slot = 0; slot < vr_preds.size(); ++slot) {
       VectorRangePredicate *vr = vr_preds[slot];
       if (!vr) continue;
-      auto index_result = parameters.index_schema->GetIndex(vr->GetAlias());
-      if (!index_result.ok()) continue;
-      auto *vector_index =
-          dynamic_cast<indexes::VectorBase *>(index_result.value().get());
+      auto *vector_index = vr_indexes[slot];
       if (!vector_index) continue;
       auto dist_result = vector_index->ComputeDistanceFromRecord(
           n.external_id, vr->GetQueryVector());
@@ -2382,35 +2397,10 @@ absl::Status query::SearchParameters::PreParseQueryString() {
   // now consumed inside ParseVectorRangePredicate and will not be present in
   // the top-level expression we receive here.
   //
-  // We use a forward scan that skips "=>" occurrences that are immediately
-  // followed by '{' (query attribute blocks) or preceded by ']' (also a suffix
-  // query attribute). The first "=>" that is followed by '[' is the KNN
-  // boundary.
-  absl::string_view::size_type delimiter_pos = absl::string_view::npos;
-  {
-    absl::string_view::size_type search_pos = 0;
-    while (search_pos < filter_expression.size()) {
-      auto found = filter_expression.find(kVectorFilterDelimiter, search_pos);
-      if (found == absl::string_view::npos) {
-        break;
-      }
-      // Skip past "=>" to see what follows.
-      size_t after_arrow = found + kVectorFilterDelimiter.size();
-      while (after_arrow < filter_expression.size() &&
-             std::isspace(filter_expression[after_arrow])) {
-        ++after_arrow;
-      }
-      if (after_arrow < filter_expression.size() &&
-          filter_expression[after_arrow] == '[') {
-        // "=>[" — this is the KNN delimiter (e.g. "=>[KNN ...]").
-        delimiter_pos = found;
-        break;
-      }
-      // Not a KNN delimiter — this "=>" is inside a tag value, quoted string,
-      // or a "=>{...}" query attribute suffix. Skip it and keep searching.
-      search_pos = found + kVectorFilterDelimiter.size();
-    }
-  }
+  // FindVectorDelimiter() skips "=>" occurrences followed by '{' and finds the
+  // first "=>" followed by '[', which is the KNN boundary.
+  const absl::string_view::size_type delimiter_pos =
+      FindVectorDelimiter(filter_expression);
   absl::string_view pre_filter;
   absl::string_view vector_filter;
   // If the delimiter is not found (ie - non vector query), treat the whole

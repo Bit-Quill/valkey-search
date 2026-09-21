@@ -141,6 +141,9 @@ absl::Status ManipulateReturnsClause(AggregateParameters& params) {
         }
       }
       if (is_vr_field) {
+        if (renamed) {
+          apply_rename(params.record_indexes_by_alias_.at(identifier));
+        }
         continue;
       }
       content = true;
