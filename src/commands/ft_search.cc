@@ -134,6 +134,15 @@ bool IsSortByFieldNumeric(const SearchCommand& command,
   if (!command.sortby_parameter.has_value()) {
     return false;
   }
+  // VR distance aliases (from CollectVrScoreFields) are synthesized numeric
+  // distances, not stored attributes, so treat them as numeric for the
+  // WITHSORTKEYS type prefix.
+  const auto vr_fields = query::CollectVrScoreFields(command);
+  for (const auto& vr_field : vr_fields) {
+    if (!vr_field.empty() && vr_field == command.sortby_parameter->field) {
+      return true;
+    }
+  }
   auto idx = command.index_schema->GetIndex(command.sortby_parameter->field);
   return idx.ok() &&
          idx.value()->GetIndexerType() == indexes::IndexerType::kNumeric;
@@ -486,20 +495,28 @@ void ApplySorting(std::vector<indexes::Neighbor>& neighbors,
 
   auto sortby = parameters.sortby_parameter.value();
 
-  // If sorting by the vector range distance alias, sort directly by the
+  // If sorting by a vector range distance alias, sort directly by the
   // precomputed neighbor distance rather than looking it up in
-  // attribute_contents.
-  // NOTE: slot 0 (vr_scores[0]) is always the primary sort key. When multiple
-  // VR predicates are present, slot 0 corresponds to the first VR predicate
-  // in parse order and is the tie-breaking key for default ascending sort.
-  std::string score_field = query::GetVrScoreFieldName(parameters);
-  if (!score_field.empty() && sortby.field == score_field) {
+  // attribute_contents. Resolve which VR slot the SORTBY field names: with
+  // multiple VR predicates, alias at index i maps to vr_scores[i] (parse
+  // order). Sorting must use the slot the alias refers to, not always slot 0.
+  auto vr_fields = query::CollectVrScoreFields(parameters);
+  size_t sort_slot = SIZE_MAX;
+  for (size_t i = 0; i < vr_fields.size(); ++i) {
+    if (!vr_fields[i].empty() && vr_fields[i] == sortby.field) {
+      sort_slot = i;
+      break;
+    }
+  }
+  if (sort_slot != SIZE_MAX) {
     auto distance_compare = [&](const indexes::Neighbor& a,
                                 const indexes::Neighbor& b) -> bool {
-      // slot 0 is the primary sort key; fall back to distance if vr_scores
-      // is empty (should not occur in practice for VR queries).
-      float dist_a = a.vr_scores.empty() ? a.distance : a.vr_scores[0];
-      float dist_b = b.vr_scores.empty() ? b.distance : b.vr_scores[0];
+      // Use the distance for the resolved slot; fall back to distance if the
+      // slot is out of range (should not occur in practice for VR queries).
+      float dist_a = (sort_slot < a.vr_scores.size()) ? a.vr_scores[sort_slot]
+                                                       : a.distance;
+      float dist_b = (sort_slot < b.vr_scores.size()) ? b.vr_scores[sort_slot]
+                                                       : b.distance;
       if (dist_a < dist_b) {
         return sortby.order == query::SortOrder::kAscending;
       }
