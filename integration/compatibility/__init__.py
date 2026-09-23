@@ -31,15 +31,15 @@ def compute_sources_hash():
     """
     h = hashlib.sha256()
     for dirpath, dirnames, filenames in os.walk(_COMPAT_DIR):
-        dirnames.sort()  # in-place: makes os.walk traversal order deterministic
+        dirnames.sort()
         for fname in sorted(filenames):
             if not fname.endswith(".py"):
                 continue
-            full = os.path.join(dirpath, fname)
-            rel = os.path.relpath(full, _COMPAT_DIR)
-            h.update(rel.replace(os.sep, "/").encode("utf-8"))  # normalize separator
+            path = os.path.join(dirpath, fname)
+            rel = os.path.relpath(path, _COMPAT_DIR).replace(os.sep, "/")
+            h.update(rel.encode("utf-8"))
             h.update(b"\0")
-            with open(full, "rb") as f:
+            with open(path, "rb") as f:
                 h.update(f.read())
             h.update(b"\0")
     return h.hexdigest()

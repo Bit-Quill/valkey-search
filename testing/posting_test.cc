@@ -7,7 +7,12 @@
 
 #include "src/indexes/text/posting.h"
 
+#include <utility>
+
+#include "absl/container/inlined_vector.h"
 #include "gtest/gtest.h"
+#include "src/indexes/text/invasive_ptr.h"
+#include "src/indexes/text/term.h"
 #include "src/utils/string_interning.h"
 #include "testing/common.h"
 #include "vmsdk/src/memory_allocation.h"
@@ -384,6 +389,68 @@ TEST_F(PostingTest, FieldMaskImplementations) {
   }
 
   EXPECT_EQ(keys_verified, 3);
+}
+
+// Regression test for the Postings use-after-free fixed in PR #985.
+//
+// A Postings::KeyIterator stores only raw pointers/iterators into
+// Postings::key_to_positions_; it does not own or refcount the Postings.
+// A TermIterator borrows those KeyIterators. Before the fix, the owning
+// InvasivePtr<Postings> handle obtained during BuildTextIterator was dropped
+// once the iterator was built, so if the tree's own reference also went away
+// the Postings map was freed while the TermIterator still pointed into it —
+// a heap-use-after-free on the next key access.
+//
+// The fix threads the owning handles into TermIterator::postings_lifetime_ so
+// the Postings outlive every borrowed KeyIterator. This test reproduces the
+// scenario: it drops every external owner and then iterates through the
+// TermIterator. It passes with the fix; without it (and the postings_lifetime_
+// member removed), the key access below is a use-after-free that ASan reports.
+TEST_F(PostingTest, TermIteratorKeepsPostingsAliveAfterOwnerDropped) {
+  constexpr uint64_t kFieldMask = 1ULL;  // field 0
+
+  // Own the Postings solely through an InvasivePtr (exercises refcounting),
+  // then populate it with a single document in field 0.
+  auto owner = InvasivePtr<Postings>::Make();
+  {
+    PositionMap pos_map = CreatePositionMap({{10, {0}}});
+    uint32_t tf = 0;
+    for (const auto& [_, field_mask] : pos_map) {
+      tf += field_mask.CountSetFields();
+    }
+    FlatPositionMap* flat_map =
+        FlatPositionMap::Create(pos_map, /*num_fields=*/5);
+    owner->InsertKey(InternKey("doc1"), flat_map, tf, /*doc_len=*/0);
+  }
+
+  // Borrow a KeyIterator (raw pointers into owner->key_to_positions_) and move
+  // the owning handle into the TermIterator's lifetime vector, mirroring
+  // BuildTextIterator.
+  absl::InlinedVector<Postings::KeyIterator, kWordExpansionInlineCapacity>
+      key_iterators;
+  key_iterators.emplace_back(owner->GetKeyIterator());
+  absl::InlinedVector<InvasivePtr<Postings>, kWordExpansionInlineCapacity>
+      postings_lifetime;
+  postings_lifetime.push_back(owner);  // TermIterator now shares ownership
+
+  auto term_iterator = std::make_unique<TermIterator>(
+      std::move(key_iterators), /*query_field_mask=*/kFieldMask,
+      /*require_positions=*/false, /*stem_field_mask=*/0,
+      /*has_original=*/true, /*leaf_weight=*/1.0f,
+      /*num_doc_contain_term=*/0, /*text_index_schema=*/nullptr,
+      /*scorer=*/nullptr, std::move(postings_lifetime));
+
+  // Drop every external owner. With the fix, TermIterator::postings_lifetime_
+  // still holds a reference so the Postings map stays alive; without it, the
+  // map is freed here and the access below dangles.
+  owner = nullptr;
+
+  // Iterate through the TermIterator. This reads the (previously) borrowed
+  // key_to_positions_ entries; under ASan this is where a UAF would surface.
+  ASSERT_FALSE(term_iterator->DoneKeys());
+  EXPECT_EQ(term_iterator->CurrentKey()->Str(), "doc1");
+  EXPECT_FALSE(term_iterator->NextKey());  // only one key
+  EXPECT_TRUE(term_iterator->DoneKeys());
 }
 
 }  // namespace valkey_search::indexes::text

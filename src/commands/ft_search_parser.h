@@ -17,20 +17,20 @@
 
 namespace valkey_search {
 namespace options {
-vmsdk::config::Number& GetMaxKnn();
-vmsdk::config::Number& GetMaxTimeoutMs();
+vmsdk::config::Number &GetMaxKnn();
+vmsdk::config::Number &GetMaxTimeoutMs();
 }  // namespace options
 
-absl::Status VerifyQueryString(query::SearchParameters& parameters);
+absl::Status VerifyQueryString(query::SearchParameters &parameters);
 
 //
 // Data Unique to the FT.SEARCH command
 //
 struct SearchCommand : public QueryCommand {
   SearchCommand(int db_num) : QueryCommand(db_num) {}
-  absl::Status ParseCommand(vmsdk::ArgsIterator& itr) override;
-  void SendReply(ValkeyModuleCtx* ctx,
-                 query::SearchResult& search_result) override;
+  absl::Status ParseCommand(vmsdk::ArgsIterator &itr) override;
+  void SendReply(ValkeyModuleCtx *ctx,
+                 query::SearchResult &search_result) override;
   absl::Status PostParseQueryString() override;
   // By default, FT.SEARCH does not require complete results and can be
   // optimized with LIMIT based trimming. Implement the correct logic here to

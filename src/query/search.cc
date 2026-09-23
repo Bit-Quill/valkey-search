@@ -1104,9 +1104,11 @@ void ResolveLeaves(const Predicate *predicate, uint32_t total_docs,
       }
 
       // Otherwise a plain TermPredicate: its own (+ stem-variant) posting
-      // lists.
+      // lists. Infix is the only other kText subclass and the parser rejects it
+      // (ParseUnquotedTextToken), so this cast cannot fail; assert rather
+      // than break, which would silently score the leaf 0.
       auto term_pred = dynamic_cast<const TermPredicate *>(predicate);
-      if (!term_pred || resolved.contains(term_pred)) break;
+      CHECK(term_pred != nullptr);
       auto text_index_schema = term_pred->GetTextIndexSchema();
       CHECK(text_index_schema != nullptr);
       auto text_index = text_index_schema->GetTextIndex();
