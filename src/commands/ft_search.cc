@@ -102,8 +102,10 @@ std::string GetSortKeyValue(const indexes::Neighbor& neighbor,
 // If the SORTBY field matches a VR distance alias, returns the formatted
 // distance for that neighbor's corresponding vr_scores slot (to be emitted
 // with the numeric '#' prefix for WITHSORTKEYS). Returns std::nullopt when the
-// SORTBY field is not a VR alias, so callers fall back to GetSortKeyValue().
-// vr_fields is the CollectVrScoreFields() result (index i = name for slot i).
+// SORTBY field is not a VR alias or the neighbor did not match this VR
+// predicate (slot out of range or kVrScoreNotMatched), so callers fall back to
+// GetSortKeyValue(). vr_fields is the CollectVrScoreFields() result (index i =
+// name for slot i).
 std::optional<std::string> GetVrSortKeyValue(
     const indexes::Neighbor& neighbor, const SearchCommand& command,
     const std::vector<std::string>& vr_fields) {
@@ -113,10 +115,11 @@ std::optional<std::string> GetVrSortKeyValue(
   for (size_t slot = 0; slot < vr_fields.size(); ++slot) {
     if (!vr_fields[slot].empty() &&
         vr_fields[slot] == command.sortby_parameter->field) {
-      float distance = (slot < neighbor.vr_scores.size())
-                           ? neighbor.vr_scores[slot]
-                           : neighbor.distance;
-      return absl::StrFormat("%.12g", distance);
+      if (slot >= neighbor.vr_scores.size() ||
+          neighbor.vr_scores[slot] == indexes::Neighbor::kVrScoreNotMatched) {
+        return std::nullopt;
+      }
+      return absl::StrFormat("%.12g", neighbor.vr_scores[slot]);
     }
   }
   return std::nullopt;
@@ -517,6 +520,14 @@ void ApplySorting(std::vector<indexes::Neighbor>& neighbors,
                                                       : a.distance;
       float dist_b = (sort_slot < b.vr_scores.size()) ? b.vr_scores[sort_slot]
                                                       : b.distance;
+      // A neighbor that did not match this VR predicate (tag-only branch of a
+      // compound OR) has no real distance and must sort after all matched
+      // neighbors, not ahead of them as float::max.
+      const bool a_unmatched = dist_a == indexes::Neighbor::kVrScoreNotMatched;
+      const bool b_unmatched = dist_b == indexes::Neighbor::kVrScoreNotMatched;
+      if (a_unmatched || b_unmatched) {
+        return !a_unmatched && b_unmatched;
+      }
       if (dist_a < dist_b) {
         return sortby.order == query::SortOrder::kAscending;
       }

@@ -933,6 +933,143 @@ TEST_F(MultiVrSendReplyTest, TwoVrPredicatesDefaultNames) {
   EXPECT_EQ(parsed, expected);
 }
 
+// In a compound OR query (e.g. `@v:[VECTOR_RANGE ...] | @tag:{B}`) a neighbor
+// matching only the tag branch carries kVrScoreNotMatched (float::max) in its
+// VR sort slot; it must not sort ahead of genuine matches nor leak as a huge
+// float via WITHSORTKEYS.
+class CompoundOrVrSentinelTest : public ValkeySearchTest {
+ public:
+  // Build an OR of two VR predicates (slots 0 and 1) and exercise SendReply.
+  // Each neighbor's vr_scores holds its two slot distances; kVrScoreNotMatched
+  // marks a branch the neighbor did not match.
+  std::string RunReply(
+      const std::string &slot0_alias, const std::string &slot1_alias,
+      const std::vector<std::pair<std::string, std::pair<float, float>>>
+          &neighbor_specs,
+      const query::SortByParameter &sortby, bool no_content,
+      bool with_sort_keys) {
+    EXPECT_CALL(*kMockValkeyModule,
+                HashGet(An<ValkeyModuleKey *>(),
+                        VALKEYMODULE_HASH_CFIELDS | VALKEYMODULE_HASH_EXISTS,
+                        An<const char *>(), An<int *>(), An<void *>()))
+        .WillRepeatedly(
+            [](ValkeyModuleKey *, int, const char *, int *exists, void *) {
+              *exists = 1;
+              return VALKEYMODULE_OK;
+            });
+    EXPECT_CALL(*kMockValkeyModule,
+                ScanKey(An<ValkeyModuleKey *>(), An<ValkeyModuleScanCursor *>(),
+                        An<ValkeyModuleScanKeyCB>(), An<void *>()))
+        .WillRepeatedly([](ValkeyModuleKey *key, ValkeyModuleScanCursor *cursor,
+                           ValkeyModuleScanKeyCB fn, void *privdata) {
+          ++cursor->cursor;
+          if ((cursor->cursor % 2) == 1) {
+            static const absl::string_view f = "tag1";
+            static const absl::string_view v = "val1";
+            auto fs = vmsdk::MakeUniqueValkeyString(f);
+            auto vs = vmsdk::MakeUniqueValkeyString(v);
+            fn(key, fs.get(), vs.get(), privdata);
+            return 1;
+          }
+          fn(key, nullptr, nullptr, privdata);
+          return 0;
+        });
+    EXPECT_CALL(*kMockValkeyModule,
+                OpenKey(&fake_ctx_, An<ValkeyModuleString *>(), testing::_))
+        .WillRepeatedly(TestValkeyModule_OpenKeyDefaultImpl);
+    EXPECT_CALL(*kMockValkeyModule, GetExpire(An<ValkeyModuleKey *>()))
+        .WillRepeatedly(testing::Return(VALKEYMODULE_NO_EXPIRE));
+
+    auto test_index_schema =
+        CreateVectorHNSWSchema("idx", &fake_ctx_, nullptr).value();
+
+    auto pred0 = std::make_unique<query::VectorRangePredicate>(
+        "vec0", "vec0_id", 1.0, "blob0", slot0_alias, std::nullopt);
+    pred0->SetScoreSlot(0);
+    auto pred1 = std::make_unique<query::VectorRangePredicate>(
+        "vec1", "vec1_id", 1.0, "blob1", slot1_alias, std::nullopt);
+    pred1->SetScoreSlot(1);
+    std::vector<std::unique_ptr<query::Predicate>> children;
+    children.push_back(std::move(pred0));
+    children.push_back(std::move(pred1));
+    auto root = std::make_unique<query::ComposedPredicate>(
+        query::LogicalOperator::kOr, std::move(children));
+
+    std::vector<indexes::Neighbor> neighbors;
+    for (const auto &spec : neighbor_specs) {
+      indexes::Neighbor n;
+      n.external_id = StringInternStore::Intern(spec.first);
+      n.distance = spec.second.first;
+      n.vr_scores = {spec.second.first, spec.second.second};
+      neighbors.push_back(std::move(n));
+    }
+
+    auto parameters = std::make_unique<SearchCommand>(0);
+    parameters->timeout_ms = 10000;
+    parameters->index_schema = test_index_schema;
+    parameters->attribute_alias = "";  // non-vector query
+    parameters->limit = {.first_index = 0, .number = 100};
+    parameters->no_content = no_content;
+    parameters->with_sort_keys = with_sort_keys;
+    parameters->num_vr_predicates = 2;
+    parameters->sortby_parameter = sortby;
+    parameters->filter_parse_results.root_predicate = std::move(root);
+
+    size_t neighbor_count = neighbors.size();
+    query::SearchResult wrapper(neighbor_count, std::move(neighbors),
+                                *parameters);
+    parameters->SendReply(&fake_ctx_, wrapper);
+    auto reply = fake_ctx_.reply_capture.GetReply();
+    fake_ctx_.reply_capture.ClearReply();
+    return reply;
+  }
+};
+
+// SORTBY <vr_alias> DESC: a genuine VR match must sort before a neighbor whose
+// sort slot is kVrScoreNotMatched, even though the sentinel equals float::max.
+TEST_F(CompoundOrVrSentinelTest, UnmatchedSortsAfterMatchedDesc) {
+  // "matched" matched slot-0 (dist 0.3); "tagonly" did not. Input order puts
+  // the unmatched neighbor first so the assertion reflects the comparator, not
+  // input order.
+  auto reply =
+      RunReply("d0", "d1",
+               {{"tagonly", {indexes::Neighbor::kVrScoreNotMatched, 0.1f}},
+                {"matched", {0.3f, indexes::Neighbor::kVrScoreNotMatched}}},
+               {.field = "d0", .order = query::SortOrder::kDescending},
+               /*no_content=*/true, /*with_sort_keys=*/false);
+
+  auto parsed = ParseRespReply(reply);
+  // NOCONTENT: [count, matched_id, tagonly_id] — matched first.
+  auto expected =
+      ParseRespReply("*3\r\n:2\r\n$7\r\nmatched\r\n$7\r\ntagonly\r\n");
+  EXPECT_EQ(parsed, expected);
+}
+
+// WITHSORTKEYS: an unmatched VR sort slot must yield the missing value (bare
+// '#' via the GetSortKeyValue fallback), not '#<float::max>'.
+TEST_F(CompoundOrVrSentinelTest, WithSortKeysUnmatchedHasNoValue) {
+  auto reply =
+      RunReply("d0", "d1",
+               {{"matched", {0.3f, indexes::Neighbor::kVrScoreNotMatched}},
+                {"tagonly", {indexes::Neighbor::kVrScoreNotMatched, 0.1f}}},
+               {.field = "d0", .order = query::SortOrder::kDescending},
+               /*no_content=*/false, /*with_sort_keys=*/true);
+
+  auto parsed = ParseRespReply(reply);
+  // "matched" sorts first with sort key "#0.300000011921" and its slot-0 (d0)
+  // pair. "tagonly" has an unmatched slot-0, so its sort key is the bare "#"
+  // and only its populated slot-1 (d1) pair is emitted.
+  auto expected = ParseRespReply(
+      "*7\r\n:2\r\n"
+      "$7\r\nmatched\r\n$15\r\n#0.300000011921\r\n"
+      "*4\r\n$2\r\nd0\r\n$14\r\n0.300000011921\r\n"
+      "$4\r\ntag1\r\n$4\r\nval1\r\n"
+      "$7\r\ntagonly\r\n$1\r\n#\r\n"
+      "*4\r\n$2\r\nd1\r\n$13\r\n0.10000000149\r\n"
+      "$4\r\ntag1\r\n$4\r\nval1\r\n");
+  EXPECT_EQ(parsed, expected);
+}
+
 // A hybrid text=>[KNN] query with WITHSCORES must still emit the relevance
 // score under NOCONTENT (Redis drops attributes for NOCONTENT, not the
 // WITHSCORES score). Exercises the SendReplyNoContent WITHSCORES path.
