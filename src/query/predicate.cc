@@ -72,12 +72,7 @@ bool TryAddWordKeyIteratorForPrefilter(
     absl::InlinedVector<
         valkey_search::indexes::text::Postings::KeyIterator,
         valkey_search::indexes::text::kWordExpansionInlineCapacity>
-        &key_iterators,
-    absl::InlinedVector<
-        valkey_search::indexes::text::InvasivePtr<
-            valkey_search::indexes::text::Postings>,
-        valkey_search::indexes::text::kWordExpansionInlineCapacity>
-        &postings_lifetime) {
+        &key_iterators) {
   auto word_iter = text_index.GetPrefix().GetWordIterator(word);
   if (!word_iter.Done() && word_iter.GetWord() == word) {
     auto postings = word_iter.GetPostingsTarget();
@@ -87,10 +82,6 @@ bool TryAddWordKeyIteratorForPrefilter(
           key_iter.ContainsFields(field_mask)) {
         if (require_positions) {
           key_iterators.emplace_back(std::move(key_iter));
-          // Retain the Postings owner: KeyIterator holds raw pointers into
-          // Postings internals and TermIterator borrows them, so the
-          // Postings refcount must not drop to zero before the iterator runs.
-          postings_lifetime.push_back(std::move(postings));
         }
         return true;
       }
@@ -109,14 +100,11 @@ EvaluationResult TermPredicate::Evaluate(
   absl::InlinedVector<indexes::text::Postings::KeyIterator,
                       indexes::text::kWordExpansionInlineCapacity>
       key_iterators;
-  absl::InlinedVector<indexes::text::InvasivePtr<indexes::text::Postings>,
-                      indexes::text::kWordExpansionInlineCapacity>
-      postings_lifetime;
   // Search for the original word - may or may not exist in corpus
   BACKGROUND_PAUSEPOINT("search_term_predicate");
   bool found_original = TryAddWordKeyIteratorForPrefilter(
       text_index, term_, target_key, field_mask, require_positions,
-      key_iterators, postings_lifetime);
+      key_iterators);
   if (found_original && !require_positions) {
     return EvaluationResult(true);
   }
@@ -134,7 +122,7 @@ EvaluationResult TermPredicate::Evaluate(
     if (stemmed != term_) {
       if (TryAddWordKeyIteratorForPrefilter(text_index, stemmed, target_key,
                                             stem_field_mask, require_positions,
-                                            key_iterators, postings_lifetime)) {
+                                            key_iterators)) {
         if (!require_positions) {
           return EvaluationResult(true);
         }
@@ -144,7 +132,7 @@ EvaluationResult TermPredicate::Evaluate(
     for (const auto &variant : stem_variants) {
       TryAddWordKeyIteratorForPrefilter(text_index, variant, target_key,
                                         stem_field_mask, require_positions,
-                                        key_iterators, postings_lifetime);
+                                        key_iterators);
     }
   }
   if (key_iterators.empty()) {
@@ -152,9 +140,7 @@ EvaluationResult TermPredicate::Evaluate(
   }
   auto iterator = std::make_unique<indexes::text::TermIterator>(
       std::move(key_iterators), field_mask, require_positions, stem_field_mask,
-      found_original, /*leaf_weight=*/1.0f, /*num_doc_contain_term=*/0,
-      /*text_index_schema=*/nullptr, /*scorer=*/nullptr,
-      std::move(postings_lifetime));
+      found_original);
   return BuildTextEvaluationResult(std::move(iterator));
 }
 
@@ -178,9 +164,6 @@ EvaluationResult PrefixPredicate::Evaluate(
   absl::InlinedVector<indexes::text::Postings::KeyIterator,
                       indexes::text::kWordExpansionInlineCapacity>
       key_iterators;
-  absl::InlinedVector<indexes::text::InvasivePtr<indexes::text::Postings>,
-                      indexes::text::kWordExpansionInlineCapacity>
-      postings_lifetime;
   // Limit the number of term word expansions
   uint32_t max_words = options::GetMaxTermExpansions().GetValue();
   uint32_t word_count = 0;
@@ -194,7 +177,6 @@ EvaluationResult PrefixPredicate::Evaluate(
       if (key_iter.SkipForwardKey(target_key) &&
           key_iter.ContainsFields(field_mask)) {
         key_iterators.emplace_back(std::move(key_iter));
-        postings_lifetime.push_back(postings);
       }
     }
     word_iter.Next();
@@ -207,10 +189,7 @@ EvaluationResult PrefixPredicate::Evaluate(
     return EvaluationResult(true);
   }
   auto iterator = std::make_unique<indexes::text::TermIterator>(
-      std::move(key_iterators), field_mask, require_positions,
-      /*stem_field_mask=*/0, /*has_original=*/false, /*leaf_weight=*/1.0f,
-      /*num_doc_contain_term=*/0, /*text_index_schema=*/nullptr,
-      /*scorer=*/nullptr, std::move(postings_lifetime));
+      std::move(key_iterators), field_mask, require_positions);
   return BuildTextEvaluationResult(std::move(iterator));
 }
 
@@ -239,9 +218,6 @@ EvaluationResult SuffixPredicate::Evaluate(
   absl::InlinedVector<indexes::text::Postings::KeyIterator,
                       indexes::text::kWordExpansionInlineCapacity>
       key_iterators;
-  absl::InlinedVector<indexes::text::InvasivePtr<indexes::text::Postings>,
-                      indexes::text::kWordExpansionInlineCapacity>
-      postings_lifetime;
   // Limit the number of term word expansions
   uint32_t max_words = options::GetMaxTermExpansions().GetValue();
   uint32_t word_count = 0;
@@ -258,7 +234,6 @@ EvaluationResult SuffixPredicate::Evaluate(
       if (key_iter.SkipForwardKey(target_key) &&
           key_iter.ContainsFields(field_mask)) {
         key_iterators.emplace_back(std::move(key_iter));
-        postings_lifetime.push_back(postings);
       }
     }
     word_iter.Next();
@@ -271,10 +246,7 @@ EvaluationResult SuffixPredicate::Evaluate(
     return EvaluationResult(true);
   }
   auto iterator = std::make_unique<indexes::text::TermIterator>(
-      std::move(key_iterators), field_mask, require_positions,
-      /*stem_field_mask=*/0, /*has_original=*/false, /*leaf_weight=*/1.0f,
-      /*num_doc_contain_term=*/0, /*text_index_schema=*/nullptr,
-      /*scorer=*/nullptr, std::move(postings_lifetime));
+      std::move(key_iterators), field_mask, require_positions);
   return BuildTextEvaluationResult(std::move(iterator));
 }
 
@@ -316,23 +288,17 @@ EvaluationResult FuzzyPredicate::Evaluate(
   // Limit the number of term word expansions
   uint32_t max_words = options::GetMaxTermExpansions().GetValue();
   // Get all KeyIterators for words within edit distance
-  auto fuzzy_result = indexes::text::FuzzySearch::Search(
+  auto expansion = indexes::text::FuzzySearch::Search(
       text_index.GetPrefix(), term_, distance_, max_words);
   // Filter to only include KeyIterators that match target_key and field_mask
   absl::InlinedVector<indexes::text::Postings::KeyIterator,
                       indexes::text::kWordExpansionInlineCapacity>
       filtered_key_iterators;
-  absl::InlinedVector<indexes::text::InvasivePtr<indexes::text::Postings>,
-                      indexes::text::kWordExpansionInlineCapacity>
-      filtered_postings_lifetime;
-  for (size_t i = 0; i < fuzzy_result.key_iterators.size(); ++i) {
+  for (auto &key_iter : expansion.key_iterators) {
     BACKGROUND_PAUSEPOINT("search_fuzzy_search");
-    auto &key_iter = fuzzy_result.key_iterators[i];
     if (key_iter.SkipForwardKey(target_key) &&
         key_iter.ContainsFields(field_mask)) {
       filtered_key_iterators.emplace_back(std::move(key_iter));
-      filtered_postings_lifetime.push_back(
-          std::move(fuzzy_result.postings_lifetime[i]));
     }
   }
   if (filtered_key_iterators.empty()) {
@@ -342,10 +308,7 @@ EvaluationResult FuzzyPredicate::Evaluate(
     return EvaluationResult(true);
   }
   auto iterator = std::make_unique<indexes::text::TermIterator>(
-      std::move(filtered_key_iterators), field_mask, require_positions,
-      /*stem_field_mask=*/0, /*has_original=*/false, /*leaf_weight=*/1.0f,
-      /*num_doc_contain_term=*/0, /*text_index_schema=*/nullptr,
-      /*scorer=*/nullptr, std::move(filtered_postings_lifetime));
+      std::move(filtered_key_iterators), field_mask, require_positions);
   return BuildTextEvaluationResult(std::move(iterator));
 }
 

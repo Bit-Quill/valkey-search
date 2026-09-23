@@ -1088,7 +1088,7 @@ void ResolveLeaves(const Predicate *predicate, uint32_t total_docs,
         auto expansion = indexes::text::FuzzySearch::Search(
             f->GetTextIndexSchema()->GetTextIndex()->GetPrefix(),
             f->GetTextString(), f->GetDistance(), max_words);
-        for (auto &postings : expansion.postings_lifetime) {
+        for (auto &postings : expansion.postings) {
           AddExpansionTerm(std::move(postings), total_docs, scorer,
                            expansion_leaf);
         }
