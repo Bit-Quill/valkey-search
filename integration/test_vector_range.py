@@ -353,11 +353,10 @@ class TestVectorRange(ValkeySearchTestCaseBase):
     # 9. Hybrid: Vector Range pre-filter + KNN
     # =================================================================
 
-    def test_vector_range_prefilter_knn(self):
+    def test_vector_range_prefilter_knn_rejected(self):
         """
-        Vector Range as pre-filter in a KNN query: KNN results are a subset
-        of the range-filtered set.
-        Req: 3.1, 3.2
+        A VECTOR_RANGE predicate in a KNN pre-filter is rejected in the
+        single-VR model (RC1). Req: 3.1, 3.2 (rejection).
         """
         client = self.server.get_new_client()
         # Need two vector fields: one for range filter, one for KNN
@@ -383,27 +382,22 @@ class TestVectorRange(ValkeySearchTestCaseBase):
 
         query_blob = float_to_bytes(QUERY_VEC)
         knn_blob = float_to_bytes(QUERY_VEC)
-        # Range radius=5 on vec: doc:0,1,2
-        # KNN 2 on vec2 from those candidates: doc:0, doc:1 (closest)
-        result = self._search(
-            client, "idx",
-            "@vec:[VECTOR_RANGE 5 $range_blob]=>[KNN 2 @vec2 $knn_blob]",
-            "PARAMS", "4", "range_blob", query_blob, "knn_blob", knn_blob,
-            "NOCONTENT",
-        )
-        assert result[0] == 2
-        keys = parse_result_keys(result)
-        # All KNN results must be within the range-filtered set
-        assert keys.issubset({"doc:0", "doc:1", "doc:2"})
+        with pytest.raises(ResponseError, match="KNN"):
+            self._search(
+                client, "idx",
+                "@vec:[VECTOR_RANGE 5 $range_blob]=>[KNN 2 @vec2 $knn_blob]",
+                "PARAMS", "4", "range_blob", query_blob, "knn_blob", knn_blob,
+                "NOCONTENT",
+            )
 
     # =================================================================
     # 10. Hybrid: Vector Range pre-filter + KNN with fewer candidates than K
     # =================================================================
 
-    def test_vector_range_prefilter_knn_fewer_candidates(self):
+    def test_vector_range_prefilter_knn_fewer_candidates_rejected(self):
         """
-        When range filter yields fewer candidates than K, return only those.
-        Req: 3.2
+        A VECTOR_RANGE predicate in a KNN pre-filter is rejected in the
+        single-VR model, regardless of candidate count. Req: 3.2 (rejection).
         """
         client = self.server.get_new_client()
         cmd = [
@@ -426,17 +420,13 @@ class TestVectorRange(ValkeySearchTestCaseBase):
             })
 
         query_blob = float_to_bytes(QUERY_VEC)
-        # Range radius=1 on vec: doc:0, doc:1 (2 candidates)
-        # KNN 10 requests 10 but only 2 candidates available
-        result = self._search(
-            client, "idx",
-            "@vec:[VECTOR_RANGE 1 $range_blob]=>[KNN 10 @vec2 $knn_blob]",
-            "PARAMS", "4", "range_blob", query_blob, "knn_blob", query_blob,
-            "NOCONTENT",
-        )
-        assert result[0] == 2
-        keys = parse_result_keys(result)
-        assert keys.issubset({"doc:0", "doc:1"})
+        with pytest.raises(ResponseError, match="KNN"):
+            self._search(
+                client, "idx",
+                "@vec:[VECTOR_RANGE 1 $range_blob]=>[KNN 10 @vec2 $knn_blob]",
+                "PARAMS", "4", "range_blob", query_blob, "knn_blob", query_blob,
+                "NOCONTENT",
+            )
 
     # =================================================================
     # 11. Query attributes: $yield_distance_as
@@ -513,9 +503,11 @@ class TestVectorRange(ValkeySearchTestCaseBase):
     # 14. Default distance field naming: __<field>_score
     # =================================================================
 
-    def test_default_distance_field_name(self):
+    def test_distance_field_requires_explicit_alias(self):
         """
-        Without $yield_distance_as, distance field defaults to __vec_score.
+        The VR distance is surfaced only under an explicit $yield_distance_as
+        alias (Redisearch parity): with the alias the field is present, and
+        without it no default __<field>_score field is emitted.
         Req: 4.3
         """
         client = self.server.get_new_client()
@@ -523,15 +515,29 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         self._load_vector_data(client)
 
         query_blob = float_to_bytes(QUERY_VEC)
+
+        # With an explicit alias the distance field is emitted under that name.
         result = self._search(
             client, "idx",
-            "@vec:[VECTOR_RANGE 5 $blob]",
+            "@vec:[VECTOR_RANGE 5 $blob]=>{$yield_distance_as: dist}",
             "PARAMS", "2", "blob", query_blob,
         )
         assert result[0] >= 1
         parsed = parse_result_with_fields(result)
         for key, fields in parsed.items():
-            assert "__vec_score" in fields, f"Expected '__vec_score' in {key}, got {list(fields.keys())}"
+            assert "dist" in fields, f"Expected 'dist' in {key}, got {list(fields.keys())}"
+
+        # Without an alias no default distance field is emitted.
+        result = self._search(
+            client, "idx",
+            "@vec:[VECTOR_RANGE 5 $blob]",
+            "PARAMS", "2", "blob", query_blob,
+        )
+        parsed = parse_result_with_fields(result)
+        for key, fields in parsed.items():
+            assert "__vec_score" not in fields, (
+                f"Unexpected default '__vec_score' in {key}: {list(fields.keys())}"
+            )
 
 
     # =================================================================
@@ -550,7 +556,7 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         query_blob = float_to_bytes(QUERY_VEC)
         result = self._search(
             client, "idx",
-            "@vec:[VECTOR_RANGE 100 $blob]",
+            "@vec:[VECTOR_RANGE 100 $blob]=>{$yield_distance_as: dist}",
             "PARAMS", "2", "blob", query_blob,
         )
         assert result[0] == 5
@@ -563,7 +569,7 @@ class TestVectorRange(ValkeySearchTestCaseBase):
                 fields[j].decode("utf-8"): fields[j + 1]
                 for j in range(0, len(fields), 2)
             }
-            dist = float(field_dict["__vec_score"])
+            dist = float(field_dict["dist"])
             distances.append(dist)
         # Verify non-decreasing order
         for i in range(len(distances) - 1):
@@ -587,12 +593,12 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         query_blob = float_to_bytes(QUERY_VEC)
         result = self._search(
             client, "idx",
-            "@vec:[VECTOR_RANGE 100 $blob]",
+            "@vec:[VECTOR_RANGE 100 $blob]=>{$yield_distance_as: dist}",
             "PARAMS", "2", "blob", query_blob,
         )
         parsed = parse_result_with_fields(result)
         for key, fields in parsed.items():
-            actual_dist = float(fields["__vec_score"])
+            actual_dist = float(fields["dist"])
             expected_dist = l2_distance(QUERY_VEC, VECTORS[key])
             assert abs(actual_dist - expected_dist) < 0.01, (
                 f"{key}: expected dist {expected_dist}, got {actual_dist}"
@@ -742,14 +748,14 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         query_blob = float_to_bytes(QUERY_VEC)
         result = self._search(
             client, "idx",
-            "@vec:[VECTOR_RANGE 5 $blob]",
+            "@vec:[VECTOR_RANGE 5 $blob]=>{$yield_distance_as: dist}",
             "PARAMS", "2", "blob", query_blob,
-            "RETURN", "2", "category", "__vec_score",
+            "RETURN", "2", "category", "dist",
         )
         assert result[0] == 3
         parsed = parse_result_with_fields(result)
         for key, fields in parsed.items():
-            assert "__vec_score" in fields, f"Missing distance score in {key}"
+            assert "dist" in fields, f"Missing distance score in {key}"
             assert "category" in fields, f"Missing category in {key}"
 
 
@@ -1140,10 +1146,11 @@ class TestVectorRange(ValkeySearchTestCaseBase):
     # 39. Multiple Vector Range predicates in one query
     # =================================================================
 
-    def test_multiple_vector_range_predicates(self):
+    def test_multiple_vector_range_predicates_rejected(self):
         """
-        Multiple Vector Range clauses combined with AND.
-        Req: 2.2
+        Multiple VECTOR_RANGE clauses are rejected in the single-VR model
+        (RC1): only one VR predicate is supported per query. Req: 2.2
+        (rejection).
         """
         client = self.server.get_new_client()
         # Two vector fields
@@ -1176,17 +1183,13 @@ class TestVectorRange(ValkeySearchTestCaseBase):
 
         blob1 = float_to_bytes([0.0, 0.0, 0.0])
         blob2 = float_to_bytes([0.0, 0.0, 0.0])
-        # Both ranges radius=2: vec1 matches doc:0,doc:1; vec2 matches doc:0,doc:2
-        # AND = doc:0
-        result = self._search(
-            client, "idx",
-            "@vec1:[VECTOR_RANGE 2 $b1] @vec2:[VECTOR_RANGE 2 $b2]",
-            "PARAMS", "4", "b1", blob1, "b2", blob2,
-            "NOCONTENT",
-        )
-        assert result[0] == 1
-        keys = parse_result_keys(result)
-        assert keys == {"doc:0"}
+        with pytest.raises(ResponseError, match="single VECTOR_RANGE"):
+            self._search(
+                client, "idx",
+                "@vec1:[VECTOR_RANGE 2 $b1] @vec2:[VECTOR_RANGE 2 $b2]",
+                "PARAMS", "4", "b1", blob1, "b2", blob2,
+                "NOCONTENT",
+            )
 
     # =================================================================
     # 40. COSINE distance metric
@@ -1309,8 +1312,9 @@ class TestVectorRange(ValkeySearchTestCaseBase):
 
     def test_aggregate_load_distance_field(self):
         """
-        FT.AGGREGATE with LOAD picks up the auto-generated __vec_score field
-        and exposes it as a numeric attribute in the aggregation pipeline.
+        FT.AGGREGATE with LOAD picks up the VR distance field (emitted under an
+        explicit $yield_distance_as alias) and exposes it as a numeric
+        attribute in the aggregation pipeline.
         """
         client = self.server.get_new_client()
         self._create_flat_index(client)
@@ -1320,26 +1324,27 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         # Collect results via AGGREGATE with LOAD of the distance field.
         result = self._aggregate(
             client, "idx",
-            "@vec:[VECTOR_RANGE 5 $blob]",
+            "@vec:[VECTOR_RANGE 5 $blob]=>{$yield_distance_as: dist}",
             "PARAMS", "2", "blob", query_blob,
-            "LOAD", "1", "__vec_score",
+            "LOAD", "1", "dist",
         )
         # result[0] is total count; rest are per-row field arrays
         assert result[0] >= 3
-        # Verify each row has __vec_score as a numeric string
+        # Verify each row has dist as a numeric string
         for row in result[1:]:
             fields = {row[i].decode("utf-8"): row[i + 1]
                       for i in range(0, len(row), 2)}
-            assert "__vec_score" in fields, (
-                f"__vec_score missing from row: {list(fields.keys())}"
+            assert "dist" in fields, (
+                f"dist missing from row: {list(fields.keys())}"
             )
-            dist = float(fields["__vec_score"])
+            dist = float(fields["dist"])
             assert dist >= 0.0, f"Distance should be non-negative, got {dist}"
 
     def test_aggregate_apply_on_distance_field(self):
         """
-        FT.AGGREGATE APPLY expression can reference the auto-generated distance
-        field (__vec_score) to compute derived values.
+        FT.AGGREGATE APPLY expression can reference the VR distance field
+        (emitted under an explicit $yield_distance_as alias) to compute derived
+        values.
         """
         client = self.server.get_new_client()
         self._create_flat_index(client)
@@ -1348,10 +1353,10 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         query_blob = float_to_bytes(QUERY_VEC)
         result = self._aggregate(
             client, "idx",
-            "@vec:[VECTOR_RANGE 5 $blob]",
+            "@vec:[VECTOR_RANGE 5 $blob]=>{$yield_distance_as: dist}",
             "PARAMS", "2", "blob", query_blob,
-            "LOAD", "1", "__vec_score",
-            "APPLY", "(@__vec_score * 2)", "AS", "double_dist",
+            "LOAD", "1", "dist",
+            "APPLY", "(@dist * 2)", "AS", "double_dist",
         )
         assert result[0] >= 3
         for row in result[1:]:
@@ -1360,7 +1365,7 @@ class TestVectorRange(ValkeySearchTestCaseBase):
             assert "double_dist" in fields, (
                 f"double_dist missing from row: {list(fields.keys())}"
             )
-            score = float(fields["__vec_score"])
+            score = float(fields["dist"])
             double_dist = float(fields["double_dist"])
             assert abs(double_dist - score * 2) < 0.01, (
                 f"double_dist ({double_dist}) != 2 * score ({score})"
@@ -1399,8 +1404,8 @@ class TestVectorRange(ValkeySearchTestCaseBase):
 
     def test_aggregate_sortby_distance_field(self):
         """
-        FT.AGGREGATE SORTBY on __vec_score orders results by ascending
-        distance from the query vector.
+        FT.AGGREGATE SORTBY on the VR distance alias orders results by
+        ascending distance from the query vector.
         """
         client = self.server.get_new_client()
         self._create_flat_index(client)
@@ -1409,82 +1414,31 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         query_blob = float_to_bytes(QUERY_VEC)
         result = self._aggregate(
             client, "idx",
-            "@vec:[VECTOR_RANGE 100 $blob]",
+            "@vec:[VECTOR_RANGE 100 $blob]=>{$yield_distance_as: dist}",
             "PARAMS", "2", "blob", query_blob,
-            "LOAD", "1", "__vec_score",
-            "SORTBY", "2", "@__vec_score", "ASC",
+            "LOAD", "1", "dist",
+            "SORTBY", "2", "@dist", "ASC",
         )
         assert result[0] == 5
         distances = []
         for row in result[1:]:
             fields = {row[i].decode("utf-8"): row[i + 1]
                       for i in range(0, len(row), 2)}
-            distances.append(float(fields["__vec_score"]))
+            distances.append(float(fields["dist"]))
         assert distances == sorted(distances), (
             f"Distances not in ASC order after SORTBY: {distances}"
         )
 
     # =================================================================
-    # Multi-score VR support (task 7)
+    # KNN pre-filter containing a VECTOR_RANGE predicate (rejected)
     # =================================================================
+    # A VECTOR_RANGE predicate inside a KNN pre-filter is unsupported in the
+    # single-VR model (FEEDBACK.md scenario 2) and rejected at parse time.
 
-    def _create_two_vec_hnsw_index(self, client, index_name="idx",
-                                   prefix="doc:", dim=3, distance="L2"):
-        """Create an HNSW index with two vector fields: vec1 and vec2."""
-        cmd = [
-            "FT.CREATE", index_name, "ON", "HASH",
-            "PREFIX", "1", prefix,
-            "SCHEMA",
-            "vec1", "VECTOR", "HNSW", "6",
-            "TYPE", "FLOAT32", "DIM", str(dim),
-            "DISTANCE_METRIC", distance,
-            "vec2", "VECTOR", "HNSW", "6",
-            "TYPE", "FLOAT32", "DIM", str(dim),
-            "DISTANCE_METRIC", distance,
-        ]
-        assert client.execute_command(*cmd) == b"OK"
-
-    def _load_two_vec_data(self, client):
+    def test_knn_with_vr_filter_rejected_aggregate(self):
         """
-        Load 5 documents with two independent vector fields.
-
-        Layout (both fields on the same axis for predictable L2 distances):
-          doc:0  vec1=(0,0,0) vec2=(0,0,0)  – origin for both
-          doc:1  vec1=(1,0,0) vec2=(2,0,0)
-          doc:2  vec1=(2,0,0) vec2=(1,0,0)
-          doc:3  vec1=(3,0,0) vec2=(3,0,0)
-          doc:4  vec1=(10,0,0) vec2=(10,0,0) – far away on both
-        """
-        data = {
-            "doc:0": {"vec1": [0.0, 0.0, 0.0], "vec2": [0.0, 0.0, 0.0]},
-            "doc:1": {"vec1": [1.0, 0.0, 0.0], "vec2": [2.0, 0.0, 0.0]},
-            "doc:2": {"vec1": [2.0, 0.0, 0.0], "vec2": [1.0, 0.0, 0.0]},
-            "doc:3": {"vec1": [3.0, 0.0, 0.0], "vec2": [3.0, 0.0, 0.0]},
-            "doc:4": {"vec1": [10.0, 0.0, 0.0], "vec2": [10.0, 0.0, 0.0]},
-        }
-        for key, fields in data.items():
-            client.hset(key, mapping={
-                field: float_to_bytes(vec)
-                for field, vec in fields.items()
-            })
-
-    # -----------------------------------------------------------------
-    # 7.1  KNN + VR filter, both with score aliases — FT.AGGREGATE
-    # -----------------------------------------------------------------
-
-    def test_knn_with_vr_filter_both_score_as(self):
-        """
-        KNN query with a VR predicate in the filter expression, where both the
-        KNN AS alias and the VR $yield_distance_as alias are specified.
-
-        FT.AGGREGATE must register both fields and populate them correctly:
-          - knn_dist: the KNN distance from the KNN search vector
-          - vr_dist:  the VR distance computed during filtering
-
-        Because the same field (vec) is used for both, distances should be
-        equal for every result.
-
-        Requirements: 1.3, 2.2, 3.2
+        FT.AGGREGATE: a KNN query with a VECTOR_RANGE predicate in its filter
+        is rejected at parse time.
         """
         client = self.server.get_new_client()
         self._create_hnsw_index(client)
@@ -1492,222 +1446,19 @@ class TestVectorRange(ValkeySearchTestCaseBase):
 
         query_blob = float_to_bytes(QUERY_VEC)
 
-        # VR filter radius=5 passes doc:0,1,2.  KNN 5 runs on those candidates.
-        # Both VR and KNN use the same blob (query from origin), so distances
-        # should be equal.
-        result = self._aggregate(
-            client, "idx",
-            "@vec:[VECTOR_RANGE 5 $vrblob]=>{$yield_distance_as: vr_dist}"
-            "=>[KNN 5 @vec $kblob AS knn_dist]",
-            "PARAMS", "4", "vrblob", query_blob, "kblob", query_blob,
-            "LOAD", "2", "knn_dist", "vr_dist",
-        )
-
-        assert result[0] >= 1, "Expected at least one result"
-
-        for row in result[1:]:
-            fields = {
-                row[i].decode("utf-8"): row[i + 1]
-                for i in range(0, len(row), 2)
-            }
-            assert "knn_dist" in fields, (
-                f"knn_dist missing from row: {list(fields.keys())}"
-            )
-            assert "vr_dist" in fields, (
-                f"vr_dist missing from row: {list(fields.keys())}"
-            )
-            knn_d = float(fields["knn_dist"])
-            vr_d = float(fields["vr_dist"])
-            assert knn_d >= 0.0
-            assert vr_d >= 0.0
-            # Both distances are from the same blob to the same field, so they
-            # must be equal (within float precision).
-            assert abs(knn_d - vr_d) < 0.01, (
-                f"knn_dist ({knn_d}) and vr_dist ({vr_d}) should be equal"
+        with pytest.raises(ResponseError, match="KNN"):
+            self._aggregate(
+                client, "idx",
+                "@vec:[VECTOR_RANGE 5 $vrblob]=>{$yield_distance_as: vr_dist}"
+                "=>[KNN 5 @vec $kblob AS knn_dist]",
+                "PARAMS", "4", "vrblob", query_blob, "kblob", query_blob,
+                "LOAD", "2", "knn_dist", "vr_dist",
             )
 
-    # -----------------------------------------------------------------
-    # 7.2  Two VR predicates with distinct aliases — FT.AGGREGATE
-    # -----------------------------------------------------------------
-
-    def test_two_vr_predicates_score_as(self):
+    def test_knn_with_vr_filter_rejected_ft_search(self):
         """
-        AND of two VR predicates on two different vector fields, each with its
-        own $yield_distance_as alias.
-
-        FT.AGGREGATE must register both d1 and d2 and populate them with the
-        correct per-field distances for every matching result.
-
-        Requirements: 1.1, 2.1
-        """
-        client = self.server.get_new_client()
-        self._create_two_vec_hnsw_index(client)
-        self._load_two_vec_data(client)
-
-        # Query vectors at origin for both fields.
-        blob1 = float_to_bytes([0.0, 0.0, 0.0])
-        blob2 = float_to_bytes([0.0, 0.0, 0.0])
-
-        # vec1 radius=5: L2 from origin — doc:0(0),doc:1(1),doc:2(4) pass; doc:3(9),doc:4(100) fail
-        # vec2 radius=5: L2 from origin — doc:0(0),doc:1(4),doc:2(1) pass; doc:3(9),doc:4(100) fail
-        # AND → doc:0, doc:1, doc:2
-        result = self._aggregate(
-            client, "idx",
-            "(@vec1:[VECTOR_RANGE 5 $b1]=>{$yield_distance_as: d1}"
-            " @vec2:[VECTOR_RANGE 5 $b2]=>{$yield_distance_as: d2})",
-            "PARAMS", "4", "b1", blob1, "b2", blob2,
-            "LOAD", "2", "d1", "d2",
-        )
-
-        assert result[0] >= 1, "Expected at least one result"
-
-        # Expected L2 distances from origin for each doc:
-        expected = {
-            "doc:0": (0.0, 0.0),
-            "doc:1": (1.0, 4.0),
-            "doc:2": (4.0, 1.0),
-        }
-
-        for row in result[1:]:
-            fields = {
-                row[i].decode("utf-8"): row[i + 1]
-                for i in range(0, len(row), 2)
-            }
-            assert "d1" in fields, f"d1 missing from row: {list(fields.keys())}"
-            assert "d2" in fields, f"d2 missing from row: {list(fields.keys())}"
-
-            key = fields.get("__key")
-            if key is not None:
-                key = key.decode("utf-8")
-                if key in expected:
-                    exp_d1, exp_d2 = expected[key]
-                    got_d1 = float(fields["d1"])
-                    got_d2 = float(fields["d2"])
-                    assert abs(got_d1 - exp_d1) < 0.01, (
-                        f"{key}: d1 expected {exp_d1}, got {got_d1}"
-                    )
-                    assert abs(got_d2 - exp_d2) < 0.01, (
-                        f"{key}: d2 expected {exp_d2}, got {got_d2}"
-                    )
-
-    # -----------------------------------------------------------------
-    # 7.3  Two VR predicates with distinct aliases — FT.SEARCH
-    # -----------------------------------------------------------------
-
-    def test_two_vr_predicates_ft_search(self):
-        """
-        Same two-VR query as 7.2 but issued via FT.SEARCH.
-
-        Both distance fields (d1 and d2) must appear for every key in the
-        reply, in score_slot order (d1 before d2), with correct values.
-
-        Requirements: 3.1
-        """
-        client = self.server.get_new_client()
-        self._create_two_vec_hnsw_index(client)
-        self._load_two_vec_data(client)
-
-        blob1 = float_to_bytes([0.0, 0.0, 0.0])
-        blob2 = float_to_bytes([0.0, 0.0, 0.0])
-
-        result = self._search(
-            client, "idx",
-            "(@vec1:[VECTOR_RANGE 5 $b1]=>{$yield_distance_as: d1}"
-            " @vec2:[VECTOR_RANGE 5 $b2]=>{$yield_distance_as: d2})",
-            "PARAMS", "4", "b1", blob1, "b2", blob2,
-        )
-
-        assert result[0] >= 1, "Expected at least one result"
-
-        parsed = parse_result_with_fields(result)
-        for key, fields in parsed.items():
-            assert "d1" in fields, f"d1 missing from key {key}: {list(fields.keys())}"
-            assert "d2" in fields, f"d2 missing from key {key}: {list(fields.keys())}"
-            d1 = float(fields["d1"])
-            d2 = float(fields["d2"])
-            assert d1 >= 0.0
-            assert d2 >= 0.0
-
-        # Validate specific expected values for known keys.
-        expected = {
-            "doc:0": (0.0, 0.0),
-            "doc:1": (1.0, 4.0),
-            "doc:2": (4.0, 1.0),
-        }
-        for key, (exp_d1, exp_d2) in expected.items():
-            if key in parsed:
-                got_d1 = float(parsed[key]["d1"])
-                got_d2 = float(parsed[key]["d2"])
-                assert abs(got_d1 - exp_d1) < 0.01, (
-                    f"{key}: d1 expected {exp_d1}, got {got_d1}"
-                )
-                assert abs(got_d2 - exp_d2) < 0.01, (
-                    f"{key}: d2 expected {exp_d2}, got {got_d2}"
-                )
-
-    # -----------------------------------------------------------------
-    # 7.4  Two VR predicates with SORTBY d1 — ordering by slot-0
-    # -----------------------------------------------------------------
-
-    def test_two_vr_predicates_sortby(self):
-        """
-        Two VR predicates in FT.AGGREGATE with SORTBY d1 ASC.
-
-        Results must be ordered by the slot-0 (d1) distance, not by d2.
-        Uses the asymmetric data layout where d1 != d2 for doc:1 and doc:2,
-        so the two orderings are observably different.
-
-        Requirements: 4.1
-        """
-        client = self.server.get_new_client()
-        self._create_two_vec_hnsw_index(client)
-        self._load_two_vec_data(client)
-
-        blob1 = float_to_bytes([0.0, 0.0, 0.0])
-        blob2 = float_to_bytes([0.0, 0.0, 0.0])
-
-        result = self._aggregate(
-            client, "idx",
-            "(@vec1:[VECTOR_RANGE 5 $b1]=>{$yield_distance_as: d1}"
-            " @vec2:[VECTOR_RANGE 5 $b2]=>{$yield_distance_as: d2})",
-            "PARAMS", "4", "b1", blob1, "b2", blob2,
-            "LOAD", "2", "d1", "d2",
-            "SORTBY", "2", "@d1", "ASC",
-        )
-
-        assert result[0] >= 2, "Expected at least two results to verify ordering"
-
-        d1_values = []
-        for row in result[1:]:
-            fields = {
-                row[i].decode("utf-8"): row[i + 1]
-                for i in range(0, len(row), 2)
-            }
-            assert "d1" in fields, f"d1 missing from row: {list(fields.keys())}"
-            assert "d2" in fields, f"d2 missing from row: {list(fields.keys())}"
-            d1_values.append(float(fields["d1"]))
-
-        # Results must be in non-decreasing d1 order.
-        assert d1_values == sorted(d1_values), (
-            f"Results not sorted by d1 ASC: {d1_values}"
-        )
-
-    # -----------------------------------------------------------------
-    # 7.5  KNN + VR filter, both with score aliases — FT.SEARCH
-    # -----------------------------------------------------------------
-
-    def test_knn_with_vr_filter_ft_search(self):
-        """
-        KNN query with a VR predicate in the filter expression, both with
-        score aliases, issued via FT.SEARCH.
-
-        The reply for each key must contain both the KNN score field (knn_dist)
-        and the VR distance field (vr_dist).
-
-        Because both use the same vector field and the same query blob, the
-        two distances must be equal for every result.
-
-        Requirements: 3.2
+        FT.SEARCH: a KNN query with a VECTOR_RANGE predicate in its filter is
+        rejected at parse time.
         """
         client = self.server.get_new_client()
         self._create_hnsw_index(client)
@@ -1715,28 +1466,10 @@ class TestVectorRange(ValkeySearchTestCaseBase):
 
         query_blob = float_to_bytes(QUERY_VEC)
 
-        result = self._search(
-            client, "idx",
-            "@vec:[VECTOR_RANGE 5 $vrblob]=>{$yield_distance_as: vr_dist}"
-            "=>[KNN 5 @vec $kblob AS knn_dist]",
-            "PARAMS", "4", "vrblob", query_blob, "kblob", query_blob,
-        )
-
-        assert result[0] >= 1, "Expected at least one result"
-
-        parsed = parse_result_with_fields(result)
-        for key, fields in parsed.items():
-            assert "knn_dist" in fields, (
-                f"knn_dist missing from key {key}: {list(fields.keys())}"
-            )
-            assert "vr_dist" in fields, (
-                f"vr_dist missing from key {key}: {list(fields.keys())}"
-            )
-            knn_d = float(fields["knn_dist"])
-            vr_d = float(fields["vr_dist"])
-            assert knn_d >= 0.0
-            assert vr_d >= 0.0
-            # Both computed from the same blob against the same field.
-            assert abs(knn_d - vr_d) < 0.01, (
-                f"{key}: knn_dist ({knn_d}) != vr_dist ({vr_d})"
+        with pytest.raises(ResponseError, match="KNN"):
+            self._search(
+                client, "idx",
+                "@vec:[VECTOR_RANGE 5 $vrblob]=>{$yield_distance_as: vr_dist}"
+                "=>[KNN 5 @vec $kblob AS knn_dist]",
+                "PARAMS", "4", "vrblob", query_blob, "kblob", query_blob,
             )
