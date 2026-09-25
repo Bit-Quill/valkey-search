@@ -396,17 +396,11 @@ void ApplySorting(std::vector<indexes::Neighbor> &neighbors,
     return;
   }
 
-  // If no SORTBY specified for vector range queries, apply default sort:
-  // ascending by distance, then ascending by key (lexicographic).
-  // This matches Redis default behavior for range queries.
-  //
-  // Guard on has_vector_range (not IsNonVectorQuery) so that pure text/tag/
-  // numeric queries keep the score-descending order established by
-  // SearchResult::TrimResults. For those queries distance == 0 for all
-  // neighbors, so sorting by distance would silently overwrite the relevance
-  // ordering with an arbitrary key-ascending re-sort.
+  // Default sort for a standalone VR query: ascending distance, then key.
+  // Guarded on IsStandaloneVectorRange so VR+text keeps the BM-25 order set by
+  // TrimResults (which the NOCONTENT early path also preserves).
   if (!parameters.sortby_parameter.has_value()) {
-    if (parameters.has_vector_range) {
+    if (query::IsStandaloneVectorRange(parameters)) {
       auto default_compare = [](const indexes::Neighbor &a,
                                 const indexes::Neighbor &b) -> bool {
         if (a.distance != b.distance) return a.distance < b.distance;
@@ -574,9 +568,8 @@ void SearchCommand::SendReply(ValkeyModuleCtx *ctx,
   // 1. Handle early reply scenarios.
   // These paths do not need pre-sorted neighbors: ShouldReturnNoResults emits
   // only the count, and the NoProcessingRequired NOCONTENT path is only taken
-  // when RequiresCompleteResults() is false (no SORTBY and no VR predicates) —
-  // the exact case where ApplySorting is a no-op. So sorting can safely run
-  // after this check.
+  // when RequiresCompleteResults() is false — the exact case where ApplySorting
+  // is a no-op. So sorting can safely run after this check.
   if (HandleEarlyReplyScenarios(ctx, search_result, *this)) {
     return;
   }

@@ -154,11 +154,16 @@ def unpack_search_result(rs, key_type, has_sortkeys=False, nocontent=False,
                          has_scores=False):
     rows = []
     if nocontent:
-        # NOCONTENT reply carries no field arrays: [count, key1, key2, ...].
-        # Driven by the command (see unpack_result), not inferred from the
-        # reply shape.
-        for key in rs[1:]:
-            rows += [{"__key": key}]
+        # NOCONTENT reply carries no field arrays. Driven by the command
+        # (see unpack_result), not inferred from the reply shape.
+        if has_scores:
+            # WITHSCORES: [count, key1, score1, ...] -- stride 2. __score goes
+            # through compare_row's numeric-tolerance path.
+            for i in range(1, len(rs), 2):
+                rows += [{"__key": rs[i], "__score": rs[i + 1]}]
+        else:
+            for key in rs[1:]:
+                rows += [{"__key": key}]
     elif has_scores and has_sortkeys:
         # WITHSCORES + WITHSORTKEYS:
         # [count, key1, score1, sortkey1, [fields1], ...] -- stride 4.

@@ -813,18 +813,15 @@ absl::StatusOr<std::vector<indexes::Neighbor>> SearchVectorRangeQuery(
       parameters.index_schema ? parameters.index_schema->GetTextIndexSchema()
                               : nullptr;
 
-  // Resolve the single VR predicate and its vector index once, up front. In a
-  // compound OR like `(@body:world | @v:[VECTOR_RANGE r $b])`, EvaluateFull
-  // short-circuits on the first matching child, so a doc that matched through
-  // the text branch carries no VR distance (HasVrScore() == false) even though
-  // it may lie within the radius. Redisearch yields the distance for every
-  // returned doc inside the radius regardless of which branch matched, so
-  // recompute it directly per key below via IsWithinVectorRange. Only
-  // meaningful when the query has a text predicate (pure VR compounds already
-  // carry the distance from the matched VR child).
+  // Resolve the single VR predicate and index once. In a compound OR, an
+  // EvaluateFull short-circuit on any non-VR child (text, tag, or numeric)
+  // leaves a matched doc without its VR distance (HasVrScore() == false) even
+  // when it lies within the radius; Redisearch yields the distance regardless
+  // of which branch matched, so recompute it per key below. The recompute only
+  // runs when HasVrScore() is false, so gating on has_vector_range is cheap.
   const VectorRangePredicate *vr_predicate = nullptr;
   indexes::VectorBase *vr_vector_index = nullptr;
-  if (QueryHasTextPredicate(parameters) &&
+  if (parameters.has_vector_range &&
       parameters.filter_parse_results.root_predicate) {
     // Single-VR invariant: parse-time rejection (PreParseQueryString) enforces
     // at most one VECTOR_RANGE predicate per query, so the first node found is
