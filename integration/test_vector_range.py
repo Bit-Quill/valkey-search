@@ -1223,6 +1223,34 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         keys = parse_result_keys(result)
         assert "doc:0" in keys
 
+    def test_cosine_hnsw_vector_range_after_delete(self):
+        """
+        COSINE HNSW VECTOR_RANGE must survive traversal past a soft-deleted
+        node. Regression: SearchRange built its QueryVector with normalize=false
+        on a normalized index, so the normalized buffer was empty and hnswlib
+        dereferenced null when scoring a deleted node -> SIGSEGV. Req: 2.1
+        """
+        client = self.server.get_new_client()
+        self._create_hnsw_index(client, dim=4, distance="COSINE")
+
+        num_docs = 40
+        for i in range(num_docs):
+            angle = i / num_docs
+            client.hset(f"doc:{i}", mapping={
+                "vec": float_to_bytes([1.0 + angle, 0.5 - angle, 0.25 * i, 1.0])
+            })
+        for i in range(0, num_docs, 2):
+            client.delete(f"doc:{i}")
+
+        result = self._search(
+            client, "idx",
+            "@vec:[VECTOR_RANGE 0.5 $blob]",
+            "PARAMS", "2", "blob", float_to_bytes([1.0, 0.5, 0.0, 1.0]),
+            "NOCONTENT",
+        )
+        assert result[0] >= 0  # completed without crashing
+        assert client.ping()
+
     # =================================================================
     # 41. SORTBY DESC with Vector Range
     # =================================================================
