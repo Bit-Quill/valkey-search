@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
@@ -175,6 +176,56 @@ TEST_F(VectorRangePredicateTest, EvaluateDelegatesAndReturnsFalse) {
 
   auto result = pred.Evaluate(evaluator);
   EXPECT_FALSE(result.matches);
+}
+
+// --- Single-VR compound propagation (B2/B11) ---
+//
+// In the single-VR model the matched VR distance must be carried up through a
+// composed AND/OR node so the fallback scan can write it into
+// Neighbor::distance. This exercises ComposedPredicate::EvaluateWithContext's
+// vr_distance carry logic without a full index scan.
+
+TEST_F(VectorRangePredicateTest, ComposedAndPropagatesVrDistance) {
+  auto vr = std::make_unique<VectorRangePredicate>(
+      "vec", "v_id", 0.5, "blob", std::optional<std::string>("dist"),
+      std::nullopt);
+  const VectorRangePredicate* vr_raw = vr.get();
+
+  std::vector<std::unique_ptr<query::Predicate>> children;
+  children.push_back(std::move(vr));
+  query::ComposedPredicate composed(query::LogicalOperator::kAnd,
+                                    std::move(children));
+
+  MockEvaluator evaluator;
+  // The VR child matches with distance 0.42.
+  EXPECT_CALL(evaluator, EvaluateVectorRange(testing::Ref(*vr_raw)))
+      .WillOnce(testing::Return(EvaluationResult(true, 0.42f)));
+
+  auto result = composed.Evaluate(evaluator);
+  ASSERT_TRUE(result.matches);
+  ASSERT_TRUE(result.HasVrScore());
+  EXPECT_FLOAT_EQ(result.vr_distance, 0.42f);
+}
+
+TEST_F(VectorRangePredicateTest, ComposedOrPropagatesVrDistance) {
+  auto vr = std::make_unique<VectorRangePredicate>(
+      "vec", "v_id", 0.5, "blob", std::optional<std::string>("dist"),
+      std::nullopt);
+  const VectorRangePredicate* vr_raw = vr.get();
+
+  std::vector<std::unique_ptr<query::Predicate>> children;
+  children.push_back(std::move(vr));
+  query::ComposedPredicate composed(query::LogicalOperator::kOr,
+                                    std::move(children));
+
+  MockEvaluator evaluator;
+  EXPECT_CALL(evaluator, EvaluateVectorRange(testing::Ref(*vr_raw)))
+      .WillOnce(testing::Return(EvaluationResult(true, 0.9f)));
+
+  auto result = composed.Evaluate(evaluator);
+  ASSERT_TRUE(result.matches);
+  ASSERT_TRUE(result.HasVrScore());
+  EXPECT_FLOAT_EQ(result.vr_distance, 0.9f);
 }
 
 }  // namespace

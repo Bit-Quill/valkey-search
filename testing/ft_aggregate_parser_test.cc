@@ -11,6 +11,7 @@
 #include <map>
 #include <vector>
 
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "src/index_schema.pb.h"
 #include "src/indexes/vector_flat.h"
@@ -527,6 +528,13 @@ class ParseCommandRegistrationTest : public ValkeySearchTest {
     }
     return true;
   }
+
+  // Runs ParseCommand and returns the resulting status without adding a test
+  // failure on error — used to assert that a query is rejected.
+  absl::Status RunParseCommandStatus(AggregateParameters &params) {
+    vmsdk::ArgsIterator itr(nullptr, 0);
+    return params.ParseCommand(itr);
+  }
 };
 
 // Non-vector query with one VR predicate: score_as set to VR alias, only one
@@ -548,13 +556,11 @@ TEST_F(ParseCommandRegistrationTest, NonVectorOneVrPredicate) {
   ASSERT_NE(it, params.record_indexes_by_alias_.end());
   EXPECT_EQ(it->second, 1u);
 
-  EXPECT_EQ(params.vr_score_field_names_.size(), 1u);
-  EXPECT_EQ(params.vr_score_field_names_[0], "my_dist");
+  EXPECT_EQ(params.vr_score_field_name_, "my_dist");
 }
 
-// Non-vector query with two VR predicates: score_as set to slot-0 alias, both
-// aliases registered as record attributes.
-TEST_F(ParseCommandRegistrationTest, NonVectorTwoVrPredicates) {
+// Non-vector query with two VR predicates: rejected in the single-VR model.
+TEST_F(ParseCommandRegistrationTest, NonVectorTwoVrPredicatesRejected) {
   auto schema = MakeSchemaWithVec("vec");
   AggregateParameters params(0);
   params.index_schema = schema;
@@ -566,23 +572,16 @@ TEST_F(ParseCommandRegistrationTest, NonVectorTwoVrPredicates) {
   params.parse_vars.params["b1"] = {1, absl::string_view(b1)};
   params.parse_vars.params["b2"] = {1, absl::string_view(b2)};
 
-  ASSERT_TRUE(RunParseCommand(params));
-
-  EXPECT_EQ(vmsdk::ToStringView(params.score_as.get()), "d1");
-
-  EXPECT_NE(params.record_indexes_by_alias_.find("d1"),
-            params.record_indexes_by_alias_.end());
-  EXPECT_NE(params.record_indexes_by_alias_.find("d2"),
-            params.record_indexes_by_alias_.end());
-
-  ASSERT_EQ(params.vr_score_field_names_.size(), 2u);
-  EXPECT_EQ(params.vr_score_field_names_[0], "d1");
-  EXPECT_EQ(params.vr_score_field_names_[1], "d2");
+  // More than one VECTOR_RANGE predicate is unsupported for RC1.
+  auto status = RunParseCommandStatus(params);
+  EXPECT_FALSE(status.ok());
+  EXPECT_THAT(std::string(status.message()),
+              testing::HasSubstr("single VECTOR_RANGE predicate"));
 }
 
-// KNN query with one VR predicate in the filter: score_as unchanged (KNN
-// alias), VR alias registered as a separate record attribute.
-TEST_F(ParseCommandRegistrationTest, KnnWithOneVrPredicate) {
+// KNN query with one VR predicate in the filter: rejected in the single-VR
+// model (VECTOR_RANGE is not supported in a KNN pre-filter).
+TEST_F(ParseCommandRegistrationTest, KnnWithOneVrPredicateRejected) {
   auto schema = MakeSchemaWithVec("vec");
   AggregateParameters params(0);
   params.index_schema = schema;
@@ -595,26 +594,13 @@ TEST_F(ParseCommandRegistrationTest, KnnWithOneVrPredicate) {
   params.parse_vars.params["kblob"] = {1, absl::string_view(kblob)};
   params.parse_vars.score_as_string = "knn_dist";
 
-  ASSERT_TRUE(RunParseCommand(params));
-
-  // score_as must still be the KNN alias.
-  EXPECT_EQ(vmsdk::ToStringView(params.score_as.get()), "knn_dist");
-
-  // KNN alias at index 1.
-  auto knn_it = params.record_indexes_by_alias_.find("knn_dist");
-  ASSERT_NE(knn_it, params.record_indexes_by_alias_.end());
-  EXPECT_EQ(knn_it->second, 1u);
-
-  // VR alias at a different index.
-  auto vr_it = params.record_indexes_by_alias_.find("vr_dist");
-  ASSERT_NE(vr_it, params.record_indexes_by_alias_.end());
-  EXPECT_NE(vr_it->second, 1u);
-
-  ASSERT_EQ(params.vr_score_field_names_.size(), 1u);
-  EXPECT_EQ(params.vr_score_field_names_[0], "vr_dist");
+  auto status = RunParseCommandStatus(params);
+  EXPECT_FALSE(status.ok());
+  EXPECT_THAT(std::string(status.message()),
+              testing::HasSubstr("not supported in the filter of a KNN"));
 }
 
-// KNN query with no VR predicate: vr_score_field_names_ remains empty.
+// KNN query with no VR predicate: vr_score_field_name_ remains empty.
 TEST_F(ParseCommandRegistrationTest, KnnWithNoVrPredicate) {
   auto schema = MakeSchemaWithVec("vec");
   AggregateParameters params(0);
@@ -627,7 +613,7 @@ TEST_F(ParseCommandRegistrationTest, KnnWithNoVrPredicate) {
   ASSERT_TRUE(RunParseCommand(params));
 
   EXPECT_EQ(vmsdk::ToStringView(params.score_as.get()), "knn_dist");
-  EXPECT_TRUE(params.vr_score_field_names_.empty());
+  EXPECT_TRUE(params.vr_score_field_name_.empty());
 }
 
 }  // namespace aggregate

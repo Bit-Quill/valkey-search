@@ -578,12 +578,12 @@ void VectorRangeSendReplyTest::DoTest(
     neighbors.push_back(ToIndexesNeighbor(neighbor));
   }
 
-  // Create a VectorRangePredicate for test setup. Assign score slot 0 so
-  // GetVrScoreFieldName can find it and serialization reads vr_scores[0].
+  // Create a VectorRangePredicate for test setup so GetVrScoreFieldName can
+  // find it and serialization reads the single VR distance from
+  // Neighbor::distance.
   auto vr_pred_owned = std::make_unique<query::VectorRangePredicate>(
       input.vector_field_alias, "vec_identifier", 1.0, "blob_param",
       input.score_as, std::nullopt);
-  vr_pred_owned->SetScoreSlot(0);
 
   auto parameters = std::make_unique<SearchCommand>(0);
   parameters->timeout_ms = 10000;
@@ -592,12 +592,10 @@ void VectorRangeSendReplyTest::DoTest(
   parameters->attribute_alias = "";
   parameters->limit = input.limit;
   parameters->no_content = no_content;
-  parameters->num_vr_predicates = 1;
+  parameters->has_vector_range = true;
   parameters->filter_parse_results.root_predicate = std::move(vr_pred_owned);
-  // Populate vr_scores on each neighbor so serialization reads from vr_scores.
-  for (auto &n : neighbors) {
-    n.vr_scores.assign(1, n.distance);
-  }
+  // Single-VR model: the VR distance is carried directly in Neighbor::distance
+  // (already set via ToIndexesNeighbor), so no extra population is needed.
   for (const auto &return_attribute : input.return_attributes) {
     parameters->return_attributes.push_back(
         ToReturnAttribute(return_attribute));
@@ -631,8 +629,10 @@ INSTANTIATE_TEST_SUITE_P(
     VectorRangeSendReplyTests, VectorRangeSendReplyTest,
     ValuesIn<VectorRangeSendReplyTestCase>({
         {
-            // Test default distance field naming: __<field>_score
-            .test_name = "default_distance_field_name",
+            // No $yield_distance_as: Redisearch parity means NO default
+            // "__<field>_score" is emitted, so each result carries only its
+            // stored attributes (tag1).
+            .test_name = "no_default_distance_field_without_alias",
             .input =
                 {
                     .neighbors = {{.external_id = "k1", .score = 0.1f},
@@ -642,10 +642,8 @@ INSTANTIATE_TEST_SUITE_P(
                     .limit = {.first_index = 0, .number = 10},
                 },
             .expected_output =
-                "*5\r\n:2\r\n$2\r\nk1\r\n*4\r\n$13\r\n__myvec_score\r\n"
-                "$13\r\n0.10000000149\r\n$4\r\ntag1\r\n$4\r\nval1\r\n"
-                "$2\r\nk2\r\n*4\r\n$13\r\n__myvec_score\r\n"
-                "$14\r\n0.300000011921\r\n$4\r\ntag1\r\n$4\r\nval1\r\n",
+                "*5\r\n:2\r\n$2\r\nk1\r\n*2\r\n$4\r\ntag1\r\n$4\r\nval1\r\n"
+                "$2\r\nk2\r\n*2\r\n$4\r\ntag1\r\n$4\r\nval1\r\n",
             .expected_output_no_content =
                 "*3\r\n:2\r\n$2\r\nk1\r\n$2\r\nk2\r\n",
         },
@@ -664,7 +662,8 @@ INSTANTIATE_TEST_SUITE_P(
             .expected_output_no_content = "*2\r\n:1\r\n$2\r\nk1\r\n",
         },
         {
-            // Test NOCONTENT suppresses all fields and scores
+            // NOCONTENT suppresses all fields and scores. Without an alias no
+            // default distance field is emitted in the content reply either.
             .test_name = "nocontent_suppresses_scores",
             .input =
                 {
@@ -676,17 +675,14 @@ INSTANTIATE_TEST_SUITE_P(
                     .limit = {.first_index = 0, .number = 10},
                 },
             .expected_output =
-                "*7\r\n:3\r\n$1\r\na\r\n*4\r\n$11\r\n__vec_score\r\n"
-                "$13\r\n0.10000000149\r\n$4\r\ntag1\r\n$4\r\nval1\r\n"
-                "$1\r\nb\r\n*4\r\n$11\r\n__vec_score\r\n"
-                "$13\r\n0.20000000298\r\n$4\r\ntag1\r\n$4\r\nval1\r\n"
-                "$1\r\nc\r\n*4\r\n$11\r\n__vec_score\r\n"
-                "$14\r\n0.300000011921\r\n$4\r\ntag1\r\n$4\r\nval1\r\n",
+                "*7\r\n:3\r\n$1\r\na\r\n*2\r\n$4\r\ntag1\r\n$4\r\nval1\r\n"
+                "$1\r\nb\r\n*2\r\n$4\r\ntag1\r\n$4\r\nval1\r\n"
+                "$1\r\nc\r\n*2\r\n$4\r\ntag1\r\n$4\r\nval1\r\n",
             .expected_output_no_content =
                 "*4\r\n:3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n",
         },
         {
-            // Test LIMIT slicing after sort
+            // Test LIMIT slicing after sort (no alias → no distance field)
             .test_name = "limit_slicing",
             .input =
                 {
@@ -698,8 +694,7 @@ INSTANTIATE_TEST_SUITE_P(
                     .limit = {.first_index = 1, .number = 1},
                 },
             .expected_output =
-                "*3\r\n:3\r\n$2\r\nk2\r\n*4\r\n$11\r\n__vec_score\r\n"
-                "$13\r\n0.20000000298\r\n$4\r\ntag1\r\n$4\r\nval1\r\n",
+                "*3\r\n:3\r\n$2\r\nk2\r\n*2\r\n$4\r\ntag1\r\n$4\r\nval1\r\n",
             .expected_output_no_content = "*2\r\n:3\r\n$2\r\nk2\r\n",
         },
         {
@@ -755,320 +750,13 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 // ---------------------------------------------------------------------------
-// Multi-VR SerializeNonVectorNeighbors tests
-// These tests exercise the updated serialization path that loops over all VR
-// score slots rather than emitting only slot 0.
+// Note: multi-VR SerializeNonVectorNeighbors tests and the compound-OR VR
+// sentinel tests were removed with the single-VR restriction (RC1). Multiple
+// VECTOR_RANGE predicates are now rejected at parse time, and a single VR
+// distance is carried in Neighbor::distance rather than a per-slot vr_scores
+// vector, so those code paths and their sentinel handling no longer exist.
+// Single-VR serialization is covered by VectorRangeSendReplyTest above.
 // ---------------------------------------------------------------------------
-
-class MultiVrSendReplyTest : public ValkeySearchTest {
- public:
-  struct NeighborSpec {
-    std::string external_id;
-    float dist0;
-    float dist1;
-  };
-
-  struct TestResult {
-    std::string reply;
-  };
-
-  // Build a SearchCommand with two VR predicates composed via AND and exercise
-  // SendReply. Uses fake_ctx_ from the base class.
-  TestResult RunTest(
-      const std::string &slot0_field, std::optional<std::string> slot0_alias,
-      const std::string &slot1_field, std::optional<std::string> slot1_alias,
-      const std::vector<NeighborSpec> &neighbor_specs, bool no_content,
-      const std::vector<TestReturnAttribute> &return_attributes = {}) {
-    EXPECT_CALL(*kMockValkeyModule,
-                HashGet(An<ValkeyModuleKey *>(),
-                        VALKEYMODULE_HASH_CFIELDS | VALKEYMODULE_HASH_EXISTS,
-                        An<const char *>(), An<int *>(), An<void *>()))
-        .WillRepeatedly(
-            [](ValkeyModuleKey *, int, const char *, int *exists, void *) {
-              *exists = 1;
-              return VALKEYMODULE_OK;
-            });
-    EXPECT_CALL(*kMockValkeyModule,
-                ScanKey(An<ValkeyModuleKey *>(), An<ValkeyModuleScanCursor *>(),
-                        An<ValkeyModuleScanKeyCB>(), An<void *>()))
-        .WillRepeatedly([](ValkeyModuleKey *key, ValkeyModuleScanCursor *cursor,
-                           ValkeyModuleScanKeyCB fn, void *privdata) {
-          // Return one field "tag1"="val1", then end.
-          ++cursor->cursor;
-          if ((cursor->cursor % 2) == 1) {
-            static const absl::string_view f = "tag1";
-            static const absl::string_view v = "val1";
-            auto fs = vmsdk::MakeUniqueValkeyString(f);
-            auto vs = vmsdk::MakeUniqueValkeyString(v);
-            fn(key, fs.get(), vs.get(), privdata);
-            return 1;
-          }
-          fn(key, nullptr, nullptr, privdata);
-          return 0;
-        });
-    EXPECT_CALL(*kMockValkeyModule,
-                OpenKey(&fake_ctx_, An<ValkeyModuleString *>(), testing::_))
-        .WillRepeatedly(TestValkeyModule_OpenKeyDefaultImpl);
-    EXPECT_CALL(*kMockValkeyModule, GetExpire(An<ValkeyModuleKey *>()))
-        .WillRepeatedly(testing::Return(VALKEYMODULE_NO_EXPIRE));
-
-    auto test_index_schema =
-        CreateVectorHNSWSchema("idx", &fake_ctx_, nullptr).value();
-
-    // Build two VR predicates.
-    auto pred0 = std::make_unique<query::VectorRangePredicate>(
-        slot0_field, slot0_field + "_id", 1.0, "blob0", slot0_alias,
-        std::nullopt);
-    pred0->SetScoreSlot(0);
-
-    auto pred1 = std::make_unique<query::VectorRangePredicate>(
-        slot1_field, slot1_field + "_id", 1.0, "blob1", slot1_alias,
-        std::nullopt);
-    pred1->SetScoreSlot(1);
-
-    std::vector<std::unique_ptr<query::Predicate>> children;
-    children.push_back(std::move(pred0));
-    children.push_back(std::move(pred1));
-    auto root = std::make_unique<query::ComposedPredicate>(
-        query::LogicalOperator::kAnd, std::move(children));
-
-    // Build neighbors.
-    std::vector<indexes::Neighbor> neighbors;
-    for (const auto &spec : neighbor_specs) {
-      indexes::Neighbor n;
-      n.external_id = StringInternStore::Intern(spec.external_id);
-      n.distance = spec.dist0;
-      n.vr_scores = {spec.dist0, spec.dist1};
-      neighbors.push_back(std::move(n));
-    }
-
-    auto parameters = std::make_unique<SearchCommand>(0);
-    parameters->timeout_ms = 10000;
-    parameters->index_schema = test_index_schema;
-    parameters->attribute_alias = "";  // non-vector query
-    parameters->limit = {.first_index = 0, .number = 100};
-    parameters->no_content = no_content;
-    parameters->num_vr_predicates = 2;
-    parameters->filter_parse_results.root_predicate = std::move(root);
-    for (const auto &ra : return_attributes) {
-      parameters->return_attributes.push_back(ToReturnAttribute(ra));
-    }
-
-    size_t neighbor_count = neighbors.size();
-    query::SearchResult wrapper(neighbor_count, std::move(neighbors),
-                                *parameters);
-    parameters->SendReply(&fake_ctx_, wrapper);
-    auto reply = fake_ctx_.reply_capture.GetReply();
-    fake_ctx_.reply_capture.ClearReply();
-    return {reply};
-  }
-};
-
-// Two VR predicates with explicit aliases: reply contains both distance pairs.
-TEST_F(MultiVrSendReplyTest, TwoVrPredicatesBothAliases) {
-  auto result = RunTest("vec1", "d1", "vec2", "d2",
-                        {{"k1", 0.1f, 0.2f}, {"k2", 0.3f, 0.4f}},
-                        /*no_content=*/false);
-
-  auto parsed = ParseRespReply(result.reply);
-  // Per key: [d1, dist0, d2, dist1, tag1, val1]
-  auto expected = ParseRespReply(
-      "*5\r\n:2\r\n"
-      "$2\r\nk1\r\n"
-      "*6\r\n$2\r\nd1\r\n$13\r\n0.10000000149\r\n"
-      "$2\r\nd2\r\n$13\r\n0.20000000298\r\n"
-      "$4\r\ntag1\r\n$4\r\nval1\r\n"
-      "$2\r\nk2\r\n"
-      "*6\r\n$2\r\nd1\r\n$14\r\n0.300000011921\r\n"
-      "$2\r\nd2\r\n$13\r\n0.40000000596\r\n"
-      "$4\r\ntag1\r\n$4\r\nval1\r\n");
-  EXPECT_EQ(parsed, expected);
-}
-
-// Two VR predicates, NOCONTENT: only key names, no score fields.
-TEST_F(MultiVrSendReplyTest, TwoVrPredicatesNoContent) {
-  auto result = RunTest("vec1", "d1", "vec2", "d2",
-                        {{"k1", 0.1f, 0.2f}, {"k2", 0.3f, 0.4f}},
-                        /*no_content=*/true);
-
-  auto parsed = ParseRespReply(result.reply);
-  auto expected = ParseRespReply("*3\r\n:2\r\n$2\r\nk1\r\n$2\r\nk2\r\n");
-  EXPECT_EQ(parsed, expected);
-}
-
-// Two VR predicates with RETURN: requested fields plus both distance pairs.
-TEST_F(MultiVrSendReplyTest, TwoVrPredicatesWithReturn) {
-  auto result = RunTest("vec1", "d1", "vec2", "d2", {{"k1", 0.5f, 0.6f}},
-                        /*no_content=*/false,
-                        {{.identifier = "d1", .alias = "d1"},
-                         {.identifier = "tag1", .alias = "tag1"},
-                         {.identifier = "d2", .alias = "d2"}});
-
-  auto parsed = ParseRespReply(result.reply);
-  // Return: d1 (score), tag1 (content), d2 (score) — in RETURN order.
-  auto expected = ParseRespReply(
-      "*3\r\n:1\r\n"
-      "$2\r\nk1\r\n"
-      "*6\r\n$2\r\nd1\r\n$3\r\n0.5\r\n"
-      "$4\r\ntag1\r\n$4\r\nval1\r\n"
-      "$2\r\nd2\r\n$14\r\n0.600000023842\r\n");
-  EXPECT_EQ(parsed, expected);
-}
-
-// Two VR predicates with default (no alias) names.
-TEST_F(MultiVrSendReplyTest, TwoVrPredicatesDefaultNames) {
-  auto result = RunTest("myvec1", std::nullopt, "myvec2", std::nullopt,
-                        {{"k1", 0.1f, 0.9f}},
-                        /*no_content=*/false);
-
-  auto parsed = ParseRespReply(result.reply);
-  // Default names: __myvec1_score (14 chars), __myvec2_score (14 chars).
-  auto expected = ParseRespReply(
-      "*3\r\n:1\r\n"
-      "$2\r\nk1\r\n"
-      "*6\r\n"
-      "$14\r\n__myvec1_score\r\n$13\r\n0.10000000149\r\n"
-      "$14\r\n__myvec2_score\r\n$14\r\n0.899999976158\r\n"
-      "$4\r\ntag1\r\n$4\r\nval1\r\n");
-  EXPECT_EQ(parsed, expected);
-}
-
-// In a compound OR query (e.g. `@v:[VECTOR_RANGE ...] | @tag:{B}`) a neighbor
-// matching only the tag branch carries kVrScoreNotMatched (float::max) in its
-// VR sort slot; it must not sort ahead of genuine matches nor leak as a huge
-// float via WITHSORTKEYS.
-class CompoundOrVrSentinelTest : public ValkeySearchTest {
- public:
-  // Build an OR of two VR predicates (slots 0 and 1) and exercise SendReply.
-  // Each neighbor's vr_scores holds its two slot distances; kVrScoreNotMatched
-  // marks a branch the neighbor did not match.
-  std::string RunReply(
-      const std::string &slot0_alias, const std::string &slot1_alias,
-      const std::vector<std::pair<std::string, std::pair<float, float>>>
-          &neighbor_specs,
-      const query::SortByParameter &sortby, bool no_content,
-      bool with_sort_keys) {
-    EXPECT_CALL(*kMockValkeyModule,
-                HashGet(An<ValkeyModuleKey *>(),
-                        VALKEYMODULE_HASH_CFIELDS | VALKEYMODULE_HASH_EXISTS,
-                        An<const char *>(), An<int *>(), An<void *>()))
-        .WillRepeatedly(
-            [](ValkeyModuleKey *, int, const char *, int *exists, void *) {
-              *exists = 1;
-              return VALKEYMODULE_OK;
-            });
-    EXPECT_CALL(*kMockValkeyModule,
-                ScanKey(An<ValkeyModuleKey *>(), An<ValkeyModuleScanCursor *>(),
-                        An<ValkeyModuleScanKeyCB>(), An<void *>()))
-        .WillRepeatedly([](ValkeyModuleKey *key, ValkeyModuleScanCursor *cursor,
-                           ValkeyModuleScanKeyCB fn, void *privdata) {
-          ++cursor->cursor;
-          if ((cursor->cursor % 2) == 1) {
-            static const absl::string_view f = "tag1";
-            static const absl::string_view v = "val1";
-            auto fs = vmsdk::MakeUniqueValkeyString(f);
-            auto vs = vmsdk::MakeUniqueValkeyString(v);
-            fn(key, fs.get(), vs.get(), privdata);
-            return 1;
-          }
-          fn(key, nullptr, nullptr, privdata);
-          return 0;
-        });
-    EXPECT_CALL(*kMockValkeyModule,
-                OpenKey(&fake_ctx_, An<ValkeyModuleString *>(), testing::_))
-        .WillRepeatedly(TestValkeyModule_OpenKeyDefaultImpl);
-    EXPECT_CALL(*kMockValkeyModule, GetExpire(An<ValkeyModuleKey *>()))
-        .WillRepeatedly(testing::Return(VALKEYMODULE_NO_EXPIRE));
-
-    auto test_index_schema =
-        CreateVectorHNSWSchema("idx", &fake_ctx_, nullptr).value();
-
-    auto pred0 = std::make_unique<query::VectorRangePredicate>(
-        "vec0", "vec0_id", 1.0, "blob0", slot0_alias, std::nullopt);
-    pred0->SetScoreSlot(0);
-    auto pred1 = std::make_unique<query::VectorRangePredicate>(
-        "vec1", "vec1_id", 1.0, "blob1", slot1_alias, std::nullopt);
-    pred1->SetScoreSlot(1);
-    std::vector<std::unique_ptr<query::Predicate>> children;
-    children.push_back(std::move(pred0));
-    children.push_back(std::move(pred1));
-    auto root = std::make_unique<query::ComposedPredicate>(
-        query::LogicalOperator::kOr, std::move(children));
-
-    std::vector<indexes::Neighbor> neighbors;
-    for (const auto &spec : neighbor_specs) {
-      indexes::Neighbor n;
-      n.external_id = StringInternStore::Intern(spec.first);
-      n.distance = spec.second.first;
-      n.vr_scores = {spec.second.first, spec.second.second};
-      neighbors.push_back(std::move(n));
-    }
-
-    auto parameters = std::make_unique<SearchCommand>(0);
-    parameters->timeout_ms = 10000;
-    parameters->index_schema = test_index_schema;
-    parameters->attribute_alias = "";  // non-vector query
-    parameters->limit = {.first_index = 0, .number = 100};
-    parameters->no_content = no_content;
-    parameters->with_sort_keys = with_sort_keys;
-    parameters->num_vr_predicates = 2;
-    parameters->sortby_parameter = sortby;
-    parameters->filter_parse_results.root_predicate = std::move(root);
-
-    size_t neighbor_count = neighbors.size();
-    query::SearchResult wrapper(neighbor_count, std::move(neighbors),
-                                *parameters);
-    parameters->SendReply(&fake_ctx_, wrapper);
-    auto reply = fake_ctx_.reply_capture.GetReply();
-    fake_ctx_.reply_capture.ClearReply();
-    return reply;
-  }
-};
-
-// SORTBY <vr_alias> DESC: a genuine VR match must sort before a neighbor whose
-// sort slot is kVrScoreNotMatched, even though the sentinel equals float::max.
-TEST_F(CompoundOrVrSentinelTest, UnmatchedSortsAfterMatchedDesc) {
-  // "matched" matched slot-0 (dist 0.3); "tagonly" did not. Input order puts
-  // the unmatched neighbor first so the assertion reflects the comparator, not
-  // input order.
-  auto reply =
-      RunReply("d0", "d1",
-               {{"tagonly", {indexes::Neighbor::kVrScoreNotMatched, 0.1f}},
-                {"matched", {0.3f, indexes::Neighbor::kVrScoreNotMatched}}},
-               {.field = "d0", .order = query::SortOrder::kDescending},
-               /*no_content=*/true, /*with_sort_keys=*/false);
-
-  auto parsed = ParseRespReply(reply);
-  // NOCONTENT: [count, matched_id, tagonly_id] — matched first.
-  auto expected =
-      ParseRespReply("*3\r\n:2\r\n$7\r\nmatched\r\n$7\r\ntagonly\r\n");
-  EXPECT_EQ(parsed, expected);
-}
-
-// WITHSORTKEYS: an unmatched VR sort slot must yield the missing value (bare
-// '#' via the GetSortKeyValue fallback), not '#<float::max>'.
-TEST_F(CompoundOrVrSentinelTest, WithSortKeysUnmatchedHasNoValue) {
-  auto reply =
-      RunReply("d0", "d1",
-               {{"matched", {0.3f, indexes::Neighbor::kVrScoreNotMatched}},
-                {"tagonly", {indexes::Neighbor::kVrScoreNotMatched, 0.1f}}},
-               {.field = "d0", .order = query::SortOrder::kDescending},
-               /*no_content=*/false, /*with_sort_keys=*/true);
-
-  auto parsed = ParseRespReply(reply);
-  // "matched" sorts first with sort key "#0.300000011921" and its slot-0 (d0)
-  // pair. "tagonly" has an unmatched slot-0, so its sort key is the bare "#"
-  // and only its populated slot-1 (d1) pair is emitted.
-  auto expected = ParseRespReply(
-      "*7\r\n:2\r\n"
-      "$7\r\nmatched\r\n$15\r\n#0.300000011921\r\n"
-      "*4\r\n$2\r\nd0\r\n$14\r\n0.300000011921\r\n"
-      "$4\r\ntag1\r\n$4\r\nval1\r\n"
-      "$7\r\ntagonly\r\n$1\r\n#\r\n"
-      "*4\r\n$2\r\nd1\r\n$13\r\n0.10000000149\r\n"
-      "$4\r\ntag1\r\n$4\r\nval1\r\n");
-  EXPECT_EQ(parsed, expected);
-}
 
 // A hybrid text=>[KNN] query with WITHSCORES must still emit the relevance
 // score under NOCONTENT (Redis drops attributes for NOCONTENT, not the
