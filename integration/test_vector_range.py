@@ -216,6 +216,48 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         assert result[0] == 5
 
     # =================================================================
+    # HNSW candidate cap and the fetch-limited counter
+    # =================================================================
+
+    def test_hnsw_fetch_limited_counter(self):
+        """
+        An HNSW range query counts toward
+        search_nonvector_results_fetched_limited_count only when the
+        max-nonvector-search-results-fetched cap may have dropped in-radius
+        docs: the cap was hit and even the farthest candidate is in range.
+        """
+        client = self.server.get_new_client()
+        self._create_hnsw_index(client)
+        self._load_vector_data(client)
+        client.execute_command(
+            "CONFIG", "SET", "search.info-developer-visible", "yes")
+        cap_config = "search.max-nonvector-search-results-fetched"
+        original_cap = client.execute_command("CONFIG", "GET", cap_config)[1]
+        query_blob = float_to_bytes(QUERY_VEC)
+
+        def search_and_count(radius):
+            """Return (result count, fetch-limited counter increment)."""
+            counter = "search_nonvector_results_fetched_limited_count"
+            before = client.info("search").get(counter, 0)
+            result = self._search(
+                client, "idx",
+                f"@vec:[VECTOR_RANGE {radius} $blob]",
+                "PARAMS", "2", "blob", query_blob,
+                "NOCONTENT",
+            )
+            return result[0], client.info("search").get(counter, 0) - before
+
+        try:
+            # A cap of 3 fetches doc:0..2 (L2 distances 0, 1, 4).
+            client.execute_command("CONFIG", "SET", cap_config, "3")
+            # doc:3 (distance 9) is in range but the cap cut it off.
+            assert search_and_count(10) == (3, 1)
+            # doc:2 is already out of range, so nothing in range was dropped.
+            assert search_and_count(2) == (2, 0)
+        finally:
+            client.execute_command("CONFIG", "SET", cap_config, original_cap)
+
+    # =================================================================
     # 5. Vector Range AND tag filter
     # =================================================================
 
