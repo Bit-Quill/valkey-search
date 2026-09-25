@@ -778,11 +778,10 @@ absl::StatusOr<std::vector<indexes::Neighbor>> SearchVectorRangeQuery(
         // Single-VR model: SearchRange already sets each neighbor's distance;
         // Neighbor::distance is the authoritative VR distance carried through
         // serialization and cluster merge (which concatenates per-shard
-        // results). For compatibility, a plain VECTOR_RANGE query is NOT
-        // ordered by distance: return range matches in document order, so
-        // order by key here (deterministic, and what a client sees without an
-        // explicit SORTBY). Clients wanting nearest-first pass
-        // SORTBY <yield_alias>, which ApplySorting handles later.
+        // results). No distance sort: like any non-vector query, the default
+        // order is set by TrimResults (score, then key) and an explicit SORTBY
+        // by ApplySorting. Ordering by key here only makes the SORTBY tie
+        // order deterministic (SearchRange returns traversal/scan order).
         std::sort(raw_neighbors.begin(), raw_neighbors.end(),
                   [](const indexes::Neighbor &a, const indexes::Neighbor &b) {
                     return a.external_id->Str() < b.external_id->Str();
@@ -937,10 +936,10 @@ absl::StatusOr<std::vector<indexes::Neighbor>> SearchVectorRangeQuery(
     nonvector_results_fetched_limited_count.Increment();
   }
 
-  // For compatibility, compound VECTOR_RANGE results are not ordered by
-  // distance. Return them in document (key) order; an explicit SORTBY is
-  // applied later by ApplySorting. Ordering by key is deterministic and keeps
-  // negate/OR results stable regardless of scan order.
+  // No distance sort: the default order is set by TrimResults (score, then
+  // key) like any non-vector query, and an explicit SORTBY by ApplySorting.
+  // Ordering by key keeps negate/OR results and SORTBY ties deterministic
+  // regardless of scan order.
   std::sort(neighbors.begin(), neighbors.end(),
             [](const indexes::Neighbor &a, const indexes::Neighbor &b) {
               return a.external_id->Str() < b.external_id->Str();
@@ -1491,6 +1490,24 @@ void ScoreTextQuery(const IndexSchema &index_schema,
   candidates = std::move(scored);
 }
 
+// Sets Neighbor.score to the relevance ScoreTextQuery computes for non-vector
+// candidates. Neighbor.distance is left untouched.
+static void ApplyRelevanceScore(const SearchParameters &parameters,
+                                std::vector<indexes::Neighbor> &neighbors) {
+  std::vector<indexes::BorrowedNeighbor> borrowed;
+  borrowed.reserve(neighbors.size());
+  for (const auto &neighbor : neighbors) {
+    borrowed.push_back(
+        {BorrowedInternedStringPtr(neighbor.external_id), 0.0f, 0.0f});
+  }
+  ScoreTextQuery(*parameters.index_schema,
+                 parameters.filter_parse_results.root_predicate.get(),
+                 indexes::scoring::GetScorer(parameters.scorer), borrowed);
+  for (size_t i = 0; i < neighbors.size(); ++i) {
+    neighbors[i].score = borrowed[i].score;
+  }
+}
+
 // Applies text relevance scoring to KNN neighbors when the vector query also
 // carries a text predicate (a hybrid `text=>[KNN]` query). Reuses
 // ScoreTextQuery via a thin BorrowedNeighbor adapter: KNN preserves neighbor
@@ -1505,18 +1522,7 @@ void ApplyHybridTextScore(const SearchParameters &parameters,
       neighbors.empty()) {
     return;
   }
-  std::vector<indexes::BorrowedNeighbor> borrowed;
-  borrowed.reserve(neighbors.size());
-  for (const auto &neighbor : neighbors) {
-    borrowed.push_back(
-        {BorrowedInternedStringPtr(neighbor.external_id), 0.0f, 0.0f});
-  }
-  ScoreTextQuery(*parameters.index_schema,
-                 parameters.filter_parse_results.root_predicate.get(),
-                 indexes::scoring::GetScorer(parameters.scorer), borrowed);
-  for (size_t i = 0; i < neighbors.size(); ++i) {
-    neighbors[i].score = borrowed[i].score;
-  }
+  ApplyRelevanceScore(parameters, neighbors);
 }
 
 // State captured once at construction: everything ScoreTextQuery derives
@@ -1892,33 +1898,15 @@ void SearchResult::TrimResults(std::vector<T> &vec,
     } else {
       std::sort(vec.begin(), vec.end(), cmp);
     }
-  } else if (IsStandaloneVectorRange(parameters)) {
-    // Standalone VR (has_vector_range, no text predicate).
-    // SearchVectorRangeQuery orders each shard's results ascending by distance,
-    // but the cluster-merge path drains the fanout heap into an order that does
-    // NOT preserve that across shards (equal-distance ties come out
-    // key-descending). Re-apply the canonical VR order here — the SAME
-    // ascending distance / ascending key comparator used by
-    // SearchVectorRangeQuery and ApplySorting — so the merged result matches
-    // single-node (and Redisearch). On the single-node path the input is
-    // already in this order, so the sort is an idempotent no-op. Sort by
-    // distance (NOT score): under the 2-arg Neighbor ctor score == distance,
-    // but a negated VR match has distance == +infinity, and only distance is
-    // the authoritative VR ordering key.
-    std::stable_sort(
-        vec.begin(), vec.end(),
-        [](const indexes::Neighbor &a, const indexes::Neighbor &b) {
-          if (a.distance != b.distance) {
-            return a.distance < b.distance;
-          }
-          return a.external_id->Str() < b.external_id->Str();
-        });
   } else if (parameters.IsNonVectorQuery() ||
              (QueryHasTextPredicate(parameters) &&
               !parameters.vector_score_only)) {
-    // Two cases sort by score descending here:
+    // Three cases sort by score descending here:
     //   - Cluster-merge non-vector path: the merged Neighbor vector is drained
     //     from the fanout heap ascending and never sorted.
+    //   - VECTOR_RANGE queries: they are scored like any other non-vector
+    //     query (the VR predicate contributes 0), so they take its default
+    //     order; SearchVectorRangeQuery leaves them in key order.
     //   - Hybrid `text=>[KNN]`: KNN produces neighbors ordered by distance, but
     //     the query score is the text relevance (set by ApplyHybridTextScore),
     //     so re-rank by it to match Redis. The vector distance is preserved on
@@ -2022,21 +2010,17 @@ absl::Status Search(SearchParameters &parameters, SearchMode search_mode) {
   }
   if (parameters.IsNonVectorQuery()) {
     // Standalone vector range queries (no KNN) are routed through a dedicated
-    // path that computes and stores distances, then sorts by ascending
-    // distance.
+    // path that computes and stores distances.
     if (parameters.has_vector_range) {
       VMSDK_ASSIGN_OR_RETURN(auto neighbors,
                              SearchVectorRangeQuery(parameters));
-      // VR + text compound (`@body:hello @v:[VECTOR_RANGE r $b]`): Redisearch
-      // ranks these by BM-25 text relevance, not by vector distance. The VR
-      // path builds neighbors with score == distance (2-arg Neighbor ctor), so
-      // overwrite score with the text relevance here. Neighbor.distance is
-      // untouched and still surfaced via $yield_distance_as. Standalone VR (no
-      // text predicate) is a no-op in ApplyHybridTextScore and keeps its
-      // distance-as-score / ascending-distance order. TrimResults then re-ranks
-      // the VR+text case score-descending (IsStandaloneVectorRange excludes
-      // only VR-without-text), matching RL's relevance order.
-      ApplyHybridTextScore(parameters, neighbors);
+      // Score exactly like any other non-vector query (DoSearchNonVector):
+      // text and tag leaves contribute relevance, the VR predicate contributes
+      // 0 (Redis reports 0 for a standalone VECTOR_RANGE). Neighbor.distance
+      // is untouched and still surfaced via $yield_distance_as. TrimResults
+      // then applies the non-vector default order (score descending, then
+      // key), so VR+text keeps its BM-25 relevance order.
+      ApplyRelevanceScore(parameters, neighbors);
       size_t total_count = neighbors.size();
       parameters.search_result =
           SearchResult(total_count, std::move(neighbors), parameters);
@@ -2110,10 +2094,6 @@ absl::Status SearchAsync(std::unique_ptr<SearchParameters> parameters,
 bool QueryHasTextPredicate(const SearchParameters &parameters) {
   return parameters.filter_parse_results.query_operations &
          QueryOperations::kContainsText;
-}
-
-bool IsStandaloneVectorRange(const SearchParameters &parameters) {
-  return parameters.has_vector_range && !QueryHasTextPredicate(parameters);
 }
 
 // Increment query operation metrics based on query operations flags.
