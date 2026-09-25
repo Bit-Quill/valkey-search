@@ -150,9 +150,35 @@ def result_has_sortkeys(rs):
         return second_elem.startswith('#') or second_elem.startswith('$')
     return False
 
-def unpack_search_result(rs, key_type, has_sortkeys=False):
+def unpack_search_result(rs, key_type, has_sortkeys=False, nocontent=False,
+                         has_scores=False):
     rows = []
-    if has_sortkeys:
+    if nocontent:
+        # NOCONTENT reply carries no field arrays: [count, key1, key2, ...].
+        # Driven by the command (see unpack_result), not inferred from the
+        # reply shape.
+        for key in rs[1:]:
+            rows += [{"__key": key}]
+    elif has_scores and has_sortkeys:
+        # WITHSCORES + WITHSORTKEYS:
+        # [count, key1, score1, sortkey1, [fields1], ...] -- stride 4.
+        for i in range(1, len(rs), 4):
+            key, score, value = rs[i], rs[i+1], rs[i+3]
+            row = {"__key": key, "__score": score}
+            for j in range(0, len(value), 2):
+                row[parse_field(value[j], key_type)] = parse_value(value[j+1], key_type)
+            rows += [row]
+    elif has_scores:
+        # WITHSCORES: [count, key1, score1, [fields1], ...] -- stride 3, with
+        # the middle element a relevance score (not a #/$ sortkey). The score
+        # goes into __score, which compare_row compares with numeric tolerance.
+        for i in range(1, len(rs), 3):
+            key, score, value = rs[i], rs[i+1], rs[i+2]
+            row = {"__key": key, "__score": score}
+            for j in range(0, len(value), 2):
+                row[parse_field(value[j], key_type)] = parse_value(value[j+1], key_type)
+            rows += [row]
+    elif has_sortkeys:
         # Format: [count, key1, sortkey1, [fields1], key2, sortkey2, [fields2], ...]
         # Step by 3 elements at a time
         for (key, sortkey, value) in [(rs[i], rs[i+1], rs[i+2]) for i in range(1, len(rs), 3)]:
@@ -161,19 +187,12 @@ def unpack_search_result(rs, key_type, has_sortkeys=False):
                 row[parse_field(value[j], key_type)] = parse_value(value[j+1], key_type)
             rows += [row]
     else:
-        # Detect NOCONTENT format: [count, key1, key2, ...] (no field arrays)
-        # vs normal format: [count, key1, [fields1], key2, [fields2], ...]
-        if len(rs) >= 2 and not isinstance(rs[1], list) and (len(rs) < 3 or not isinstance(rs[2], list)):
-            # NOCONTENT: just keys, no field arrays
-            for key in rs[1:]:
-                rows += [{"__key": key}]
-        else:
-            # Format: [count, key1, [fields1], key2, [fields2], ...]
-            for (key, value) in [(rs[i],rs[i+1]) for i in range(1, len(rs), 2)]:
-                row = {"__key": key}
-                for i in range(0, len(value), 2):
-                    row[parse_field(value[i], key_type)] = parse_value(value[i+1], key_type)
-                rows += [row]
+        # Format: [count, key1, [fields1], key2, [fields2], ...]
+        for (key, value) in [(rs[i],rs[i+1]) for i in range(1, len(rs), 2)]:
+            row = {"__key": key}
+            for i in range(0, len(value), 2):
+                row[parse_field(value[i], key_type)] = parse_value(value[i+1], key_type)
+            rows += [row]
     return rows
 
 def unpack_agg_result(rs, key_type):
@@ -216,6 +235,30 @@ def row_sort_key(sortkeys):
     return key
 
 
+def _search_returns_no_fields(cmd):
+    """True when an FT.SEARCH command yields a keys-only reply.
+
+    Two command shapes produce [count, key1, key2, ...] with no field arrays:
+      * NOCONTENT keyword present.
+      * A RETURN clause requesting zero fields (RETURN 0). Per Redisearch, the
+        last RETURN clause wins, so a later `RETURN <n>` (n>0) re-adds fields
+        and overrides an earlier `RETURN 0`; honor the last one.
+    Command-driven on purpose -- inferring this from the reply shape misreads a
+    normal keys-only reply as key/fields pairs.
+    """
+    tokens = [c.lower() if isinstance(c, str) else c for c in cmd]
+    if "nocontent" in tokens:
+        return True
+    last_return_count = None
+    for i, tok in enumerate(tokens):
+        if tok == "return" and i + 1 < len(tokens):
+            try:
+                last_return_count = int(cmd[i + 1])
+            except (ValueError, TypeError):
+                last_return_count = None
+    return last_return_count == 0
+
+
 def unpack_result(cmd, key_type, rs, sortkeys):
     if "ft.search" in cmd[0].lower():
         # Detect if the result actually has sort keys by checking the format,
@@ -223,7 +266,18 @@ def unpack_result(cmd, key_type, rs, sortkeys):
         # where the expected result (from pickle) may not have sort keys even
         # if the command requested them.
         has_sortkeys = result_has_sortkeys(rs)
-        out = unpack_search_result(rs, key_type, has_sortkeys)
+        # A keys-only reply (NOCONTENT or RETURN 0) is decided by the command,
+        # not inferred from the reply shape: the reply is [count, key1, key2,
+        # ...] with no field arrays, which the field-bearing path below would
+        # misread as key/fields pairs.
+        nocontent = _search_returns_no_fields(cmd)
+        # WITHSCORES inserts a relevance score after each key. It is not a #/$
+        # sort key, so result_has_sortkeys can't see it; drive it from the cmd.
+        has_scores = any(
+            isinstance(c, str) and c.lower() == "withscores" for c in cmd
+        )
+        out = unpack_search_result(rs, key_type, has_sortkeys, nocontent,
+                                   has_scores)
     else:
         out = unpack_agg_result(rs, key_type)
     #
@@ -299,17 +353,13 @@ def compare_number_eq(l, r):
         
     
 def compare_row(l, r, key_type):
-    # Valkey includes auto-generated vector range score fields (e.g. __v1_score)
-    # that Redis does not produce. Strip them only from the Valkey (left) side
-    # when they are absent from the Redis (right) side, so that we do not
-    # silently paper over real incompatibilities.
-    score_suffix = "_score"
-    def is_vr_score_field(k):
-        return k.startswith("__") and k.endswith(score_suffix) and k != "__key"
-
-    r_keys = set(r.keys())
-    l_filtered = {k: v for k, v in l.items()
-                  if not (is_vr_score_field(k) and k not in r_keys)}
+    # VECTOR_RANGE parity: Redisearch surfaces the VR distance ONLY under an
+    # explicit $yield_distance_as alias — never a default __<field>_score. Valkey
+    # matches this (GetVrScoreFieldName returns "" without an alias), so neither
+    # side emits a default score field and the rows compare directly. Do NOT
+    # re-introduce a strip of __*_score fields here: that would re-hide a real
+    # divergence if the default field ever reappeared on one side.
+    l_filtered = dict(l)
     r_filtered = dict(r)
 
     lks = sorted(list(l_filtered.keys()))
@@ -358,9 +408,6 @@ def compare_row(l, r, key_type):
             except json.decoder.JSONDecodeError:
                 print("JSON decode error comparing: ", l_filtered[lks[i]], " and ", r_filtered[rks[i]])
                 return False
-        elif l_filtered[lks[i]] != r_filtered[rks[i]]:
-            print("mismatch field: ", lks[i], " and ", rks[i], " ", l_filtered[lks[i]], "!=", r_filtered[rks[i]])
-            return False
         else:
             lv, rv = l[lks[i]], r[rks[i]]
             # Exact match is the fast path, which is what every loaded/stored
@@ -371,9 +418,9 @@ def compare_row(l, r, key_type):
             # tolerant numeric compare -- it treats nan/-nan as equal and uses
             # math.isclose, absorbing the two engines' differing float precision
             # and negative-zero formatting on any server-computed numeric field
-            # (APPLY results, GROUPBY reducers). Non-numeric values (concat/
-            # lower/substr/timefmt string results, tags, keys) stay an exact
-            # match.
+            # (APPLY results, GROUPBY reducers, VR distances). Non-numeric
+            # values (concat/lower/substr/timefmt string results, tags, keys)
+            # stay an exact match.
             if _is_numeric(lv) and _is_numeric(rv) and compare_number_eq(lv, rv):
                 continue
             print("mismatch field: ", lks[i], " and ", rks[i], " ", lv, "!=", rv)
@@ -432,10 +479,12 @@ def compare_results(expected, results):
         print(TEST_MARKER)
         return False
 
-    # The sortkey-prefix cases assert the sort-key bytes, which the generic
-    # unpack path below discards (unpack_search_result drops the sort-key
-    # element). Their replies are fully deterministic, so compare them raw.
-    if expected.get("data_set_name") == SORTKEY_PREFIX_DATA_SET:
+    # The sortkey-prefix and repeated-RETURN cases assert exact reply bytes,
+    # which the generic unpack path below would discard or reshape
+    # (unpack_search_result drops the sort-key element and infers field
+    # arrays). Their replies are fully deterministic, so compare them raw.
+    if expected.get("data_set_name") in (SORTKEY_PREFIX_DATA_SET,
+                                         RETURN_CLAUSE_DATA_SET):
         if expected["result"] == results["result"]:
             return True
         print(f"CMD: {cmd}")
@@ -614,8 +663,9 @@ def do_answer_cluster(cluster_client, expected, data_set, test_case):
         data_set = next_data_set
 
     # for the excluded queries with known difference
-    # just run in valkey to make sure they do not crash
-    if expected.get("excluded"):
+    # just run in valkey to make sure they do not crash.
+    # excluded_cluster: relaxed in cluster only (CMD still asserts equality).
+    if expected.get("excluded") or expected.get("excluded_cluster"):
         try:
             print(f"Running excluded CLUSTER query (no-crash check): {expected['cmd']}")
             cluster_client.execute_command(*expected["cmd"])
@@ -799,7 +849,10 @@ class TestAnswersCME(ValkeySearchClusterTestCaseDebugMode):
                 test_case=self,
             )
 
-        expected_count = sum(1 for a in answers if not a.get('excluded'))
+        expected_count = sum(
+            1 for a in answers
+            if not a.get('excluded') and not a.get('excluded_cluster')
+        )
         if correct_answers != expected_count:
             print(f"Correct answers: {correct_answers} out of {len(answers)}")
             if failed_tests:
