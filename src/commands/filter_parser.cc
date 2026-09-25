@@ -473,9 +473,10 @@ FilterParser::ParseVectorRangePredicate(const std::string& attribute_alias) {
   while (!IsEnd() && Peek() != ']') {
     // Try to match known optional parameter keywords
     if (MatchInsensitive("EF_RUNTIME")) {
-      // EF_RUNTIME is not supported for VECTOR_RANGE queries. Reject it
-      // explicitly so clients receive a clear error rather than silently
-      // running with the parameter ignored.
+      // EF_RUNTIME is a KNN beam-width knob (the HNSW candidate-list size for a
+      // top-k search) with no meaning for a radius traversal, which returns all
+      // neighbors within the radius. Reject it rather than imply a tuning
+      // effect that does not exist.
       VMSDK_ASSIGN_OR_RETURN(auto ef_value,
                              ParseToken("]", "EF_RUNTIME argument is missing"));
       (void)ef_value;

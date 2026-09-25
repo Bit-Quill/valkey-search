@@ -36,7 +36,7 @@ struct SearchCommand : public QueryCommand {
   // optimized with LIMIT based trimming. Implement the correct logic here to
   // return true when those clauses are present.
   bool RequiresCompleteResults() const override {
-    return sortby_parameter.has_value() || num_vr_predicates > 0;
+    return sortby_parameter.has_value();
   }
 
   query::SerializationRange GetSerializationRange() const;
@@ -53,7 +53,7 @@ struct SearchCommand : public QueryCommand {
 
   // Returns true if this is a standalone vector range query (no KNN).
   bool IsVectorRangeQuery() const {
-    return IsNonVectorQuery() && num_vr_predicates > 0;
+    return IsNonVectorQuery() && has_vector_range;
   }
 };
 

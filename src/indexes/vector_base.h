@@ -154,19 +154,11 @@ static_assert(std::is_trivially_destructible_v<BorrowedNeighbor>,
               "BorrowedNeighbor must be trivially destructible");
 
 struct Neighbor {
-  // Sentinel value indicating a VR predicate did not match this neighbor
-  // (distance exceeds radius). Serialization layers skip emitting the field
-  // when vr_scores[slot] equals this value.
-  static constexpr float kVrScoreNotMatched = std::numeric_limits<float>::max();
-
   InternedStringPtr external_id;
   float distance;
   float score;
   uint64_t sequence_number;
   std::optional<RecordsMap> attribute_contents;
-  // Per-VectorRangePredicate distances, indexed by score_slot assigned during
-  // parse. Empty for KNN and non-VR searches.
-  std::vector<float> vr_scores;
 
   Neighbor() : distance(0.0f), score(kDefaultScore), sequence_number(0) {}
   Neighbor(const InternedStringPtr &external_id, float distance)
@@ -191,8 +183,7 @@ struct Neighbor {
         distance(other.distance),
         score(other.score),
         sequence_number(other.sequence_number),
-        attribute_contents(std::move(other.attribute_contents)),
-        vr_scores(std::move(other.vr_scores)) {}
+        attribute_contents(std::move(other.attribute_contents)) {}
   Neighbor &operator=(Neighbor &&other) noexcept {
     if (this != &other) {
       external_id = std::move(other.external_id);
@@ -200,7 +191,6 @@ struct Neighbor {
       score = other.score;
       sequence_number = other.sequence_number;
       attribute_contents = std::move(other.attribute_contents);
-      vr_scores = std::move(other.vr_scores);
     }
     return *this;
   }
@@ -328,8 +318,8 @@ class VectorBase : public IndexBase {
       absl::string_view query, float radius, cancel::Token &cancellation_token,
       std::unique_ptr<hnswlib::BaseFilterFunctor> filter = nullptr) = 0;
 
-  // Public because PrefilterEvaluator and PopulateVrScoresForNeighbors in
-  // search.cc call this directly.
+  // Public because PrefilterEvaluator in search.cc / vector_base.cc calls this
+  // directly to compute a VR match distance.
   // Returns the distance and internal label for the given key, or an error if
   // the key is not tracked. Used by AddPrefilteredKey and PrefilterEvaluator.
   // Prefer IsWithinVectorRange for callers that only need a pass/fail check.
@@ -549,8 +539,8 @@ class PrefilterEvaluator : public query::Evaluator {
   bool Evaluate(const query::Predicate &predicate,
                 const InternedStringPtr &key);
   // Like Evaluate(), but returns the full EvaluationResult so that callers
-  // handling VectorRange queries can read the score_slot and vr_distance
-  // without a side-channel.
+  // handling VectorRange queries can read the matched vr_distance without a
+  // side-channel.
   query::EvaluationResult EvaluateFull(const query::Predicate &predicate,
                                        const InternedStringPtr &key);
   const InternedStringPtr &GetTargetKey() const override {

@@ -70,10 +70,10 @@ struct EvaluationResult {
   float score{0.0f};
   std::unique_ptr<valkey_search::indexes::text::TextIterator> filter_iterator;
 
-  // For VectorRange predicates: the slot index and computed distance.
-  // score_slot is kNoScoreSlot when not set (non-VR predicates).
-  static constexpr size_t kNoScoreSlot = std::numeric_limits<size_t>::max();
-  size_t score_slot{kNoScoreSlot};
+  // For VectorRange predicates: the computed distance to the query vector.
+  // has_vr_distance is true only when this result came from a VR predicate
+  // that matched (single-VR model: at most one VR distance per document).
+  bool has_vr_distance{false};
   float vr_distance{0.0f};
 
   // Constructor 1: For non-text predicates (no iterator)
@@ -86,14 +86,14 @@ struct EvaluationResult {
       std::unique_ptr<valkey_search::indexes::text::TextIterator> iterator)
       : matches(result), filter_iterator(std::move(iterator)) {}
 
-  // Constructor 3: For VectorRange predicates (carries slot + distance)
-  EvaluationResult(bool result, size_t slot, float distance)
+  // Constructor 3: For VectorRange predicates (carries the matched distance)
+  EvaluationResult(bool result, float distance)
       : matches(result),
         filter_iterator(nullptr),
-        score_slot(slot),
+        has_vr_distance(true),
         vr_distance(distance) {}
 
-  bool HasVrScore() const { return score_slot != kNoScoreSlot; }
+  bool HasVrScore() const { return has_vr_distance; }
 
   // Helper function to build EvaluationResult for text predicates
   EvaluationResult BuildTextEvaluationResult(
@@ -230,6 +230,10 @@ class VectorRangePredicate : public Predicate {
   double GetRadius() const { return radius_; }
   absl::string_view GetVectorParamName() const { return vector_param_name_; }
   const std::optional<std::string>& GetScoreAs() const { return score_as_; }
+  // epsilon is parsed, validated, stored, and serialized on the wire, but it is
+  // not forwarded to the range traversal (see SearchVectorRangeQuery); the HNSW
+  // range search does not yet honor it. Kept so queries carrying $epsilon parse
+  // and round-trip unchanged.
   std::optional<double> GetEpsilon() const { return epsilon_; }
 
   void SetQueryVector(std::string query);
@@ -248,15 +252,6 @@ class VectorRangePredicate : public Predicate {
     radius_param_name_ = std::move(name);
   }
 
-  // Score slot: index into Neighbor::vr_scores[] where this predicate's
-  // distance is stored. Assigned during PreParseQueryString so that distance
-  // writing is local to the predicate rather than a side-channel.
-  static constexpr size_t kUnassignedScoreSlot =
-      std::numeric_limits<size_t>::max();
-  size_t GetScoreSlot() const { return score_slot_; }
-  void SetScoreSlot(size_t slot) { score_slot_ = slot; }
-  bool HasScoreSlot() const { return score_slot_ != kUnassignedScoreSlot; }
-
  private:
   std::string alias_;
   vmsdk::UniqueValkeyString identifier_;
@@ -266,7 +261,6 @@ class VectorRangePredicate : public Predicate {
   std::optional<double> epsilon_;
   std::string query_vector_;
   std::string radius_param_name_;  // non-empty when radius is a $param
-  size_t score_slot_{kUnassignedScoreSlot};
 };
 
 using FieldMaskPredicate = uint64_t;

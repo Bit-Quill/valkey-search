@@ -18,6 +18,7 @@
 #include "src/commands/ft_aggregate_exec.h"
 #include "src/index_schema.h"
 #include "src/indexes/index_base.h"
+#include "src/indexes/scoring/scorer.h"
 #include "src/metrics.h"
 #include "src/query/response_generator.h"
 #include "src/valkey_search_options.h"  // VALKEY_SEARCH_COMPATIBILITY_FIX
@@ -131,15 +132,10 @@ absl::Status ManipulateReturnsClause(AggregateParameters &params) {
         }
         continue;
       }
-      // Also skip VR score field names — they are synthetic computed fields
-      // that are not in the index schema.
-      bool is_vr_field = false;
-      for (const auto &vr_name : params.vr_score_field_names_) {
-        if (identifier == vr_name) {
-          is_vr_field = true;
-          break;
-        }
-      }
+      // Also skip the VR score field name — it is a synthetic computed field
+      // that is not in the index schema.
+      bool is_vr_field = !params.vr_score_field_name_.empty() &&
+                         identifier == params.vr_score_field_name_;
       if (is_vr_field) {
         if (renamed) {
           apply_rename(params.record_indexes_by_alias_.at(identifier));
@@ -191,15 +187,15 @@ absl::Status AggregateParameters::ParseCommand(vmsdk::ArgsIterator &itr) {
   parse_vars_.index_interface_ = &real_index_interface;
 
   VMSDK_RETURN_IF_ERROR(PreParseQueryString());
-  // Collect VR score field names for all VR predicates (if any).
-  if (num_vr_predicates > 0) {
-    vr_score_field_names_ = query::CollectVrScoreFields(*this);
+  // Resolve the single VR predicate's distance field name (if any).
+  if (has_vector_range) {
+    vr_score_field_name_ = query::GetVrScoreFieldName(*this);
 
     // For non-vector queries the mandatory slot-1 record attribute must carry
-    // the primary (slot-0) VR distance. Set score_as so the unconditional
-    // AddRecordAttribute call below uses the correct name.
-    if (IsNonVectorQuery() && !vr_score_field_names_.empty()) {
-      score_as = vmsdk::MakeUniqueValkeyString(vr_score_field_names_[0]);
+    // the VR distance. Set score_as so the unconditional AddRecordAttribute
+    // call below uses the correct name.
+    if (IsNonVectorQuery() && !vr_score_field_name_.empty()) {
+      score_as = vmsdk::MakeUniqueValkeyString(vr_score_field_name_);
     }
   }
   // Ensure that key is first value if it gets included...
@@ -209,15 +205,10 @@ absl::Status AggregateParameters::ParseCommand(vmsdk::ArgsIterator &itr) {
   CHECK(AddRecordAttribute(score_sv, score_sv, score_sv,
                            indexes::IndexerType::kNone) == kScoreColumn);
 
-  // Register additional VR score fields.
-  // Non-vector queries: slot 0 is already at index 1, start from slot 1.
-  // KNN queries: no overlap with score_as, register all slots.
-  const size_t vr_start = IsNonVectorQuery() ? 1 : 0;
-  for (size_t slot = vr_start; slot < vr_score_field_names_.size(); ++slot) {
-    const auto &name = vr_score_field_names_[slot];
-    if (name.empty()) continue;
-    AddRecordAttribute(name, name, name, indexes::IndexerType::kNone);
-  }
+  // Single-VR model: a standalone/compound VR query is always a non-vector
+  // query (KNN+VR is rejected at parse time), and its distance field was set
+  // as score_as above, so it is already registered at kScoreColumn. No extra
+  // VR field registration is needed here.
 
   VMSDK_RETURN_IF_ERROR(parser.Parse(*this, itr, true));
   if (itr.DistanceEnd() > 0) {
@@ -398,16 +389,21 @@ absl::Status CreateRecordsFromNeighbors(
       rec->fields_.at(scores_index) = expr::Value(n.score);
     }
 
-    // Write all VR distances into their registered record attribute slots.
-    for (size_t slot = 0; slot < parameters.vr_score_field_names_.size();
-         ++slot) {
-      const auto &name = parameters.vr_score_field_names_[slot];
-      if (name.empty()) continue;
-      if (slot >= n.vr_scores.size()) continue;  // slot not populated → omit
-      if (n.vr_scores[slot] == indexes::Neighbor::kVrScoreNotMatched) continue;
-      auto it = parameters.record_indexes_by_alias_.find(name);
-      if (it == parameters.record_indexes_by_alias_.end()) continue;
-      rec->fields_.at(it->second) = expr::Value(n.vr_scores[slot]);
+    // Write the single VR distance into its registered record attribute slot.
+    // In the single-VR model the matched distance is carried in
+    // Neighbor::distance; a non-VR OR-branch match has distance == +infinity
+    // (no VR distance) and is omitted. IsInf (bit-pattern check) rather than
+    // `!= infinity()`: the build uses -ffast-math (-ffinite-math-only), under
+    // which the compiler assumes no infinities and folds the direct comparison
+    // to a constant, defeating the guard. Same reason ft_search.cc routes this
+    // through HasVrDistance().
+    if (!parameters.vr_score_field_name_.empty() &&
+        !indexes::scoring::IsInf(n.distance)) {
+      auto it = parameters.record_indexes_by_alias_.find(
+          parameters.vr_score_field_name_);
+      if (it != parameters.record_indexes_by_alias_.end()) {
+        rec->fields_.at(it->second) = expr::Value(n.distance);
+      }
     }
 
     // Process attribute contents

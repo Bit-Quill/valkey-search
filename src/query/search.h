@@ -218,10 +218,10 @@ struct SearchParameters {
   uint64_t timeout_ms{0};
   bool no_content{false};
   FilterParseResults filter_parse_results;
-  // Number of VectorRangePredicate nodes found during filter parsing. Each
-  // predicate has been assigned a unique score_slot in [0, num_vr_predicates).
-  // Neighbor::vr_scores is sized to this value for VR searches.
-  size_t num_vr_predicates{0};
+  // True when the filter tree contains a (single) VectorRangePredicate. In the
+  // single-VR model the matched distance is carried in Neighbor::distance;
+  // there is no per-predicate score-slot side channel.
+  bool has_vector_range{false};
   std::vector<ReturnAttribute> return_attributes;
   bool inorder{false};
   std::optional<uint32_t> slop;
@@ -262,15 +262,15 @@ struct SearchParameters {
   bool IsVectorQuery() const { return !IsNonVectorQuery(); }
   // Indicates whether the search requires complete results (neighbors/keys) to
   // be able to return correct results. An example of this is when sorting on a
-  // particular is needed on the results. This should be overridden in derived
-  // classes if needed. The default implementation returns false.
-  // VR queries also require complete results because:
-  // 1. Non-negated VR: results are sorted by distance, but per-shard trimming
-  //    could lose globally-correct results
-  // 2. Negated VR: all results have distance=0, so secondary sort by key
-  //    requires all results before trimming
+  // particular field is needed on the results. This should be overridden in
+  // derived classes if needed. The default implementation returns false.
+  //
+  // Single-VR note: a standalone VR query is sorted by ascending distance, but
+  // that sort is applied on the shard before results are returned/merged, and
+  // cluster merge simply concatenates per-shard in-radius neighbors. No global
+  // repair pass is required, so VR alone no longer forces complete results.
   virtual bool RequiresCompleteResults() const {
-    return sortby_parameter.has_value() || num_vr_predicates > 0;
+    return sortby_parameter.has_value();
   }
 
   // True when the search needs no post-search processing: a NOCONTENT reply
@@ -375,22 +375,25 @@ CalcBestMatchingPrefilteredKeys(
 
 bool QueryHasTextPredicate(const SearchParameters &parameters);
 
-// Walk the predicate tree, assign each VectorRangePredicate a unique
-// score_slot, and return the total count of VR predicates found.
-size_t AssignVectorRangeScoreSlots(Predicate *predicate);
+// True for a standalone VECTOR_RANGE query: the filter carries a VR predicate
+// and has no text predicate. Such a query is ordered ascending by distance in
+// SearchVectorRangeQuery and its Neighbor::score equals the distance, so it
+// must be excluded from the score-descending re-sort in TrimResults (which
+// would otherwise reverse it to farthest-first and break LIMIT windowing).
+bool IsStandaloneVectorRange(const SearchParameters &parameters);
 
-// Returns the score field names for all VR predicates in score_slot order.
-// Entry i is the name for score_slot i:
-//   - the explicit $yield_distance_as alias if set, otherwise
-//   - the default "__<alias>_score" string.
-// Returns an empty vector when num_vr_predicates == 0.
-std::vector<std::string> CollectVrScoreFields(
-    const SearchParameters &parameters);
-
-// Return the distance score field name for the first (slot-0) VR predicate in
-// the query (i.e. the yield_distance_as alias or "__<alias>_score" default).
-// Returns empty string if there are no VR predicates.
+// Returns the distance score field name for the single VR predicate in the
+// query: the explicit $yield_distance_as alias if set, otherwise "" (empty).
+// Redisearch parity: a VECTOR_RANGE distance is surfaced ONLY under an explicit
+// alias — there is no default "__<alias>_score" field — so an empty name here
+// suppresses the field wherever emission is gated on a non-empty name. Also
+// returns "" when the query has no VR predicate.
 std::string GetVrScoreFieldName(const SearchParameters &parameters);
+
+// Count the number of VectorRangePredicate nodes in the predicate tree. Used
+// at parse time to reject unsupported multi-VR queries (single-VR only).
+// Returns 0 when predicate is null.
+size_t CountVectorRangePredicates(const Predicate *predicate);
 
 // Check if no results should be returned based on limit parameters
 bool ShouldReturnNoResults(const SearchParameters &parameters);

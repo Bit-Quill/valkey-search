@@ -457,6 +457,25 @@ EvaluationResult ComposedPredicate::EvaluateWithContext(Evaluator &evaluator,
                                                         bool from_or) const {
   // Determine if children need to return positions for proximity checks.
   bool require_positions = slop_.has_value() || inorder_;
+  // Single-VR model: carry the matched VectorRange distance up the tree so the
+  // top-level EvaluationResult exposes it (via HasVrScore()/vr_distance) for
+  // the caller to write into Neighbor::distance. Only one VR predicate can be
+  // present per query (enforced at parse time), so at most one child sets this.
+  bool has_vr_distance = false;
+  float vr_distance = 0.0f;
+  auto carry_vr = [&](const EvaluationResult &r) {
+    if (r.has_vr_distance) {
+      has_vr_distance = true;
+      vr_distance = r.vr_distance;
+    }
+  };
+  auto with_vr = [&](EvaluationResult &&r) -> EvaluationResult {
+    if (has_vr_distance) {
+      r.has_vr_distance = true;
+      r.vr_distance = vr_distance;
+    }
+    return std::move(r);
+  };
   // Handle AND logic
   if (GetType() == PredicateType::kComposedAnd) {
     uint32_t childrenWithPositions = 0;
@@ -486,6 +505,7 @@ EvaluationResult ComposedPredicate::EvaluateWithContext(Evaluator &evaluator,
       if (!result.matches) {
         return EvaluationResult(false);
       }
+      carry_vr(result);
       if (result.filter_iterator) {
         childrenWithPositions++;
         query_field_mask &= result.filter_iterator->QueryFieldMask();
@@ -516,14 +536,14 @@ EvaluationResult ComposedPredicate::EvaluateWithContext(Evaluator &evaluator,
         return EvaluationResult(false);
       }
       // Return the proximity iterator for potential nested use.
-      return {true, std::move(proximity_iterator)};
+      return with_vr({true, std::move(proximity_iterator)});
     }
     // Propagate the filter iterator from the one child exists
     else if (childrenWithPositions == 1) {
-      return {true, std::move(iterators[0])};
+      return with_vr({true, std::move(iterators[0])});
     }
     // All matched, but none have position. non-proximity case
-    return EvaluationResult(true);
+    return with_vr(EvaluationResult(true));
   }
   // Handle OR logic
   auto filter_iterators =
@@ -534,10 +554,12 @@ EvaluationResult ComposedPredicate::EvaluateWithContext(Evaluator &evaluator,
         EvaluatePredicate(child.get(), evaluator, require_positions, true);
     // Short-circuit if any matches and positions not required.
     if (result.matches && !require_positions) {
-      return EvaluationResult(true);
+      carry_vr(result);
+      return with_vr(EvaluationResult(true));
     } else if (result.matches) {
+      carry_vr(result);
       if (result.filter_iterator == nullptr) {
-        return EvaluationResult(true);
+        return with_vr(EvaluationResult(true));
       }
       filter_iterators.push_back(std::move(result.filter_iterator));
     }
@@ -560,7 +582,7 @@ EvaluationResult ComposedPredicate::EvaluateWithContext(Evaluator &evaluator,
     return EvaluationResult(false);
   }
   // Return the OR proximity iterator for potential nested scenarios.
-  return {true, std::move(or_proximity_iterator)};
+  return with_vr({true, std::move(or_proximity_iterator)});
 }
 
 }  // namespace valkey_search::query

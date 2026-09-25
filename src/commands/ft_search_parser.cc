@@ -300,8 +300,9 @@ absl::Status SearchCommand::PostParseQueryString() {
     }
   }
 
-  // Check VR yield-distance aliases against the schema for the same reason.
-  for (const auto &vr_field : query::CollectVrScoreFields(*this)) {
+  // Check the VR yield-distance alias against the schema for the same reason.
+  {
+    const std::string vr_field = query::GetVrScoreFieldName(*this);
     if (!vr_field.empty() && index_schema->GetIndex(vr_field).ok()) {
       return absl::InvalidArgumentError(
           absl::StrCat("Property `", vr_field, "` already exists in schema"));
@@ -309,16 +310,11 @@ absl::Status SearchCommand::PostParseQueryString() {
   }
 
   if (sortby_parameter.has_value()) {
-    // Allow sorting by any vector range distance alias (yield_distance_as)
+    // Allow sorting by the vector range distance alias (yield_distance_as)
     // without requiring it to be a real index field.
-    auto vr_score_fields = query::CollectVrScoreFields(*this);
-    bool is_vr_score_field = false;
-    for (const auto &field : vr_score_fields) {
-      if (!field.empty() && sortby_parameter->field == field) {
-        is_vr_score_field = true;
-        break;
-      }
-    }
+    const std::string vr_score_field = query::GetVrScoreFieldName(*this);
+    const bool is_vr_score_field =
+        !vr_score_field.empty() && sortby_parameter->field == vr_score_field;
     // The vector score field (KNN distance, reported via score_as) is also a
     // synthesized reply field, not a schema attribute, so it is sortable
     // without being declared. Validate any other field against the schema.

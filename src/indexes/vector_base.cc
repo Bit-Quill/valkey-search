@@ -243,7 +243,7 @@ query::EvaluationResult PrefilterEvaluator::EvaluateVectorRange(
   if (distance > static_cast<float>(predicate.GetRadius())) {
     return query::EvaluationResult(false);
   }
-  return query::EvaluationResult(true, predicate.GetScoreSlot(), distance);
+  return query::EvaluationResult(true, distance);
 }
 
 // ComputeDistanceFromRecord without query_magnitude — used by VR search path.

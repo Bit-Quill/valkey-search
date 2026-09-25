@@ -225,7 +225,7 @@ FilterVerification VerifyFilter(
   // and content fetch.  KNN queries are already excluded (IsNonVectorQuery()
   // is false for them); this guard adds the VR exclusion.
   const bool recompute_score =
-      parameters.IsNonVectorQuery() && parameters.num_vr_predicates == 0;
+      parameters.IsNonVectorQuery() && !parameters.has_vector_range;
   auto recompute = [&](EvaluationResult &result) -> FilterVerification {
     if (!result.matches || !recompute_score) {
       return {result.matches, std::nullopt};
