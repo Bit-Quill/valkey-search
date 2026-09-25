@@ -1851,6 +1851,8 @@ INSTANTIATE_TEST_SUITE_P(
             .create_success = true,
         },
         {
+            // Parse-level only: the FLAT-vs-HNSW check for $epsilon runs in
+            // SearchParameters::PreParseQueryString, not in the parser.
             .test_name = "vector_range_with_epsilon",
             .filter = "@vec:[VECTOR_RANGE 1.5 $blob]=>{$epsilon: 0.1}",
             .create_success = true,
@@ -1924,14 +1926,29 @@ INSTANTIATE_TEST_SUITE_P(
             .filter = "@vec:[VECTOR_RANGE 1.5 $blob]=>{$epsilon: notanumber}",
             .create_success = false,
             .create_expected_error_message =
-                "$epsilon must be a valid non-negative number",
+                "$epsilon must be a positive number",
         },
         {
             .test_name = "vector_range_negative_epsilon",
             .filter = "@vec:[VECTOR_RANGE 1.5 $blob]=>{$epsilon: -0.5}",
             .create_success = false,
             .create_expected_error_message =
-                "$epsilon must be a valid non-negative number",
+                "$epsilon must be a positive number",
+        },
+        {
+            .test_name = "vector_range_zero_epsilon",
+            .filter = "@vec:[VECTOR_RANGE 1.5 $blob]=>{$epsilon: 0}",
+            .create_success = false,
+            .create_expected_error_message =
+                "$epsilon must be a positive number",
+        },
+        {
+            .test_name = "vector_range_zero_float_epsilon",
+            .filter = "@vec:[VECTOR_RANGE 1.5 $blob]=>{$yield_distance_as: d; "
+                      "$epsilon: 0.0}",
+            .create_success = false,
+            .create_expected_error_message =
+                "$epsilon must be a positive number",
         },
         {
             .test_name = "vector_range_unknown_query_attr",

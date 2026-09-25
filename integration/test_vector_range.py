@@ -963,11 +963,11 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         Req: 4.5
         """
         client = self.server.get_new_client()
-        self._create_flat_index(client)
+        self._create_hnsw_index(client)
         self._load_vector_data(client)
 
         query_blob = float_to_bytes(QUERY_VEC)
-        with pytest.raises(ResponseError):
+        with pytest.raises(ResponseError, match="must be a positive number"):
             self._search(
                 client, "idx",
                 "@vec:[VECTOR_RANGE 5 $blob]=>{$epsilon: notanumber}",
@@ -984,11 +984,11 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         Req: 4.5
         """
         client = self.server.get_new_client()
-        self._create_flat_index(client)
+        self._create_hnsw_index(client)
         self._load_vector_data(client)
 
         query_blob = float_to_bytes(QUERY_VEC)
-        with pytest.raises(ResponseError):
+        with pytest.raises(ResponseError, match="must be a positive number"):
             self._search(
                 client, "idx",
                 "@vec:[VECTOR_RANGE 5 $blob]=>{$epsilon: -0.5}",

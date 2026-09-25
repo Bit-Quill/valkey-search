@@ -381,15 +381,14 @@ FilterParser::ParseVectorRangeQueryAttributes(bool expect_arrow_after) {
       // Parse the numeric value — stops at ';', '}', or whitespace
       VMSDK_ASSIGN_OR_RETURN(
           auto value_str,
-          ParseToken(";}", "$epsilon must be a valid non-negative number"));
+          ParseToken(";}", "$epsilon must be a positive number"));
       double epsilon_val;
       if (!absl::SimpleAtod(value_str, &epsilon_val)) {
-        return absl::InvalidArgumentError(
-            "$epsilon must be a valid non-negative number");
+        return absl::InvalidArgumentError("$epsilon must be a positive number");
       }
-      if (epsilon_val < 0) {
-        return absl::InvalidArgumentError(
-            "$epsilon must be a valid non-negative number");
+      // Redis rejects 0 as well as negative values.
+      if (epsilon_val <= 0) {
+        return absl::InvalidArgumentError("$epsilon must be a positive number");
       }
       attrs.epsilon = epsilon_val;
     } else {

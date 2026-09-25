@@ -15,6 +15,7 @@
 #include "gtest/gtest.h"
 #include "src/index_schema.pb.h"
 #include "src/indexes/vector_flat.h"
+#include "src/indexes/vector_hnsw.h"
 #include "src/valkey_search_options.h"
 #include "testing/common.h"
 #include "vmsdk/src/testing_infra/utils.h"
@@ -513,15 +514,27 @@ static std::string MakeBlob3() {
 
 class ParseCommandRegistrationTest : public ValkeySearchTest {
  protected:
-  // Creates a schema with one 3-dim flat vector field named `vec_alias`.
+  // Creates a schema with one 3-dim vector field named `vec_alias`: flat, or
+  // HNSW when `hnsw` is true.
   std::shared_ptr<MockIndexSchema> MakeSchemaWithVec(
-      absl::string_view vec_alias) {
+      absl::string_view vec_alias, bool hnsw = false) {
     auto schema = CreateIndexSchema("test_schema", &fake_ctx_).value();
     EXPECT_CALL(*schema, GetIdentifier(::testing::_))
         .Times(::testing::AnyNumber())
         .WillRepeatedly([&schema](absl::string_view field) {
           return schema->IndexSchema::GetIdentifier(field);
         });
+    if (hnsw) {
+      auto idx = indexes::VectorHNSW<float>::Create(
+                     CreateHNSWVectorIndexProto(
+                         3, data_model::DISTANCE_METRIC_L2, 100, /*m=*/16,
+                         /*ef_construction=*/200, /*ef_runtime=*/10),
+                     std::string(vec_alias) + "_id",
+                     data_model::AttributeDataType::ATTRIBUTE_DATA_TYPE_HASH, 0)
+                     .value();
+      VMSDK_EXPECT_OK(schema->AddIndex(vec_alias, vec_alias, idx));
+      return schema;
+    }
     data_model::VectorIndex proto;
     proto.set_dimension_count(3);
     proto.set_initial_cap(100);
@@ -634,6 +647,35 @@ TEST_F(ParseCommandRegistrationTest, KnnWithNoVrPredicate) {
 
   EXPECT_EQ(vmsdk::ToStringView(params.score_as.get()), "knn_dist");
   EXPECT_TRUE(params.vr_score_field_name_.empty());
+}
+
+// $epsilon is accepted only on an HNSW vector field; Redis rejects it on FLAT.
+TEST_F(ParseCommandRegistrationTest, VrEpsilonOnFlatRejected) {
+  auto schema = MakeSchemaWithVec("vec");
+  AggregateParameters params(0);
+  params.index_schema = schema;
+  params.parse_vars.query_string =
+      "@vec:[VECTOR_RANGE 0.5 $blob]=>{$epsilon: 0.5}";
+  std::string blob = MakeBlob3();
+  params.parse_vars.params["blob"] = {1, absl::string_view(blob)};
+
+  auto status = RunParseCommandStatus(params);
+  EXPECT_FALSE(status.ok());
+  EXPECT_THAT(std::string(status.message()),
+              testing::HasSubstr(
+                  "$epsilon is not supported for FLAT vector field 'vec'"));
+}
+
+TEST_F(ParseCommandRegistrationTest, VrEpsilonOnHnswAccepted) {
+  auto schema = MakeSchemaWithVec("vec", /*hnsw=*/true);
+  AggregateParameters params(0);
+  params.index_schema = schema;
+  params.parse_vars.query_string =
+      "@vec:[VECTOR_RANGE 0.5 $blob]=>{$epsilon: 0.5}";
+  std::string blob = MakeBlob3();
+  params.parse_vars.params["blob"] = {1, absl::string_view(blob)};
+
+  ASSERT_TRUE(RunParseCommand(params));
 }
 
 }  // namespace aggregate

@@ -2493,6 +2493,13 @@ absl::Status query::SearchParameters::PreParseQueryString() {
                   absl::StrCat("'", vr_pred->GetAlias(),
                                "' is not indexed as a vector field"));
             }
+            // $epsilon is an HNSW search knob; Redis rejects it on FLAT.
+            if (vr_pred->GetEpsilon().has_value() &&
+                index->GetIndexerType() == indexes::IndexerType::kFlat) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "$epsilon is not supported for FLAT vector field '",
+                  vr_pred->GetAlias(), "'"));
+            }
             return absl::OkStatus();
           });
       VMSDK_RETURN_IF_ERROR(validate);
