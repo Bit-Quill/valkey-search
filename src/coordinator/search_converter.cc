@@ -319,11 +319,13 @@ absl::Status GRPCSearchRequestToParameters(
   parameters->filter_parse_results.query_operations =
       static_cast<QueryOperations>(request.query_operations());
   parameters->sortby_parameter = SortByFromGRPC(request);
-  // Assign score slots to VectorRangePredicate nodes from the deserialized
-  // predicate tree so that the search path can detect and handle VR queries.
+  // Detect VectorRangePredicate nodes in the deserialized predicate tree so the
+  // search path can handle single-VR queries. Single-VR model: the matched
+  // distance is carried in Neighbor::distance, not a score-slot side channel.
   if (parameters->filter_parse_results.root_predicate) {
-    parameters->num_vr_predicates = query::AssignVectorRangeScoreSlots(
-        parameters->filter_parse_results.root_predicate.get());
+    parameters->has_vector_range =
+        query::CountVectorRangePredicates(
+            parameters->filter_parse_results.root_predicate.get()) > 0;
   }
   parameters->scorer = ScorerFromGRPC(request.scorer());
   return absl::OkStatus();
