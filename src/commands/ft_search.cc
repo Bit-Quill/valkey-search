@@ -221,14 +221,14 @@ void SerializeNeighbors(ValkeyModuleCtx *ctx,
       ValkeyModule_ReplyWithArray(ctx, VALKEYMODULE_POSTPONED_LEN);
       size_t cnt = 0;
       for (const auto &return_attribute : parameters.return_attributes) {
-        absl::string_view ret_id =
-            vmsdk::ToStringView(return_attribute.identifier.get());
-        if (vmsdk::ToStringView(parameters.score_as.get()) == ret_id) {
+        if (vmsdk::ToStringView(parameters.score_as.get()) ==
+            vmsdk::ToStringView(return_attribute.identifier.get())) {
           ReplyScore(ctx, *parameters.score_as, neighbors[i]);
           ++cnt;
           continue;
         }
-        auto it = neighbors[i].attribute_contents.value().find(ret_id);
+        auto it = neighbors[i].attribute_contents.value().find(
+            vmsdk::ToStringView(return_attribute.identifier.get()));
         if (it != neighbors[i].attribute_contents.value().end()) {
           ValkeyModule_ReplyWithString(ctx, return_attribute.alias.get());
           ValkeyModule_ReplyWithString(ctx, it->second.value.get());
@@ -273,8 +273,6 @@ void SerializeNonVectorNeighbors(ValkeyModuleCtx *ctx,
     vr_field = query::GetVrScoreFieldName(command);
   }
 
-  // When with_sort_keys is true, we add an extra element per result (the sort
-  // key)
   // Each result has: doc_id [+ score if WITHSCORES] [+ sort_key if
   // WITHSORTKEYS] + attributes array
   size_t elements_per_result = 2;

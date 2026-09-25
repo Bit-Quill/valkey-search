@@ -16,7 +16,6 @@
 #include "src/commands/ft_aggregate_exec.h"
 #include "src/index_schema.h"
 #include "src/indexes/index_base.h"
-#include "src/indexes/scoring/scorer.h"
 #include "src/metrics.h"
 
 namespace valkey_search {
