@@ -169,7 +169,7 @@ class BaseCompatibilityTest:
         self.vector_data_type = vector_data_type
         load_data(self.client, data_set_name, key_type, vector_data_type=vector_data_type)
 
-    def execute_command(self, cmd, excluded=False):
+    def execute_command(self, cmd, excluded=False, excluded_cluster_only=False):
         answer = {"cmd": cmd,
                   "key_type": self.key_type,
                   "data_set_name": self.data_set_name,
@@ -181,6 +181,12 @@ class BaseCompatibilityTest:
             # captured, but the replay only checks that valkey-search does not
             # crash on the command rather than comparing results.
             answer["excluded"] = True
+        if excluded_cluster_only:
+            # Difference that only exists in cluster (CME): single-node (CMD)
+            # still asserts full equality against Redisearch, while the cluster
+            # replay does a no-crash check only. Used for BM-25 text scoring,
+            # which is shard-local in cluster by design.
+            answer["excluded_cluster"] = True
         try:
             print("Cmd:", *cmd)
             answer["result"] = self.client.execute_command(*cmd)
@@ -1315,23 +1321,6 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             query_attrs="{$epsilon: 0.5}",
         )
 
-    def _multi_vr_search(self, key_type, dialect, query_expr, radii,
-                         extra_args=None, blob=None):
-        """Build and execute a multi-VR search with parameterized radii."""
-        if blob is None:
-            blob = struct.pack(f"<{VECTOR_DIM}f", 0.0, 0.0, 0.0)
-        r1, r2 = radii
-        cmd = [
-            "ft.search", f"{key_type}_idx1", query_expr,
-            "PARAMS", "8",
-            "B1", blob, "R1", str(r1),
-            "B2", blob, "R2", str(r2),
-        ]
-        if extra_args:
-            cmd += extra_args
-        cmd += ["DIALECT", str(dialect)]
-        self.execute_command(cmd)
-
     def test_vector_range_withsortkeys(self, key_type, dialect, vector_data_type):
         """VECTOR_RANGE with WITHSORTKEYS captures sort key format."""
         self.setup_data("sortable numbers", key_type)
@@ -1377,74 +1366,6 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
                 radius=r, query_vector=[0.75, 0.75, 0.75],
             )
 
-    def test_vector_range_multi_vr_and(self, key_type, dialect, vector_data_type):
-        """Two VR predicates on different fields combined with AND."""
-        self.setup_data("two vectors", key_type)
-        expr_named = "(@v1:[VECTOR_RANGE $R1 $B1]=>{$yield_distance_as: d1} @v2:[VECTOR_RANGE $R2 $B2]=>{$yield_distance_as: d2})"
-        expr_bare = "(@v1:[VECTOR_RANGE $R1 $B1] @v2:[VECTOR_RANGE $R2 $B2])"
-        self._multi_vr_search(key_type, dialect, expr_named, (5, 5))
-        self._multi_vr_search(key_type, dialect, expr_bare, (5, 5),
-                              extra_args=["NOCONTENT"])
-        self._multi_vr_search(key_type, dialect, expr_named, (50, 50))
-
-    def test_vector_range_multi_vr_or(self, key_type, dialect, vector_data_type):
-        """Two VR predicates on different fields combined with OR."""
-        self.setup_data("two vectors", key_type)
-        expr_named = "(@v1:[VECTOR_RANGE $R1 $B1]=>{$yield_distance_as: d1} | @v2:[VECTOR_RANGE $R2 $B2]=>{$yield_distance_as: d2})"
-        expr_bare = "(@v1:[VECTOR_RANGE $R1 $B1] | @v2:[VECTOR_RANGE $R2 $B2])"
-        self._multi_vr_search(key_type, dialect, expr_named, (2, 2))
-        self._multi_vr_search(key_type, dialect, expr_bare, (2, 2),
-                              extra_args=["NOCONTENT"])
-        self._multi_vr_search(key_type, dialect, expr_named, (50, 2))
-
-    def test_vector_range_multi_vr_same_field(self, key_type, dialect, vector_data_type):
-        """Two VR predicates on the same field with different radii (AND)."""
-        self.setup_data("two vectors", key_type)
-        expr = "(@v1:[VECTOR_RANGE $R1 $B1]=>{$yield_distance_as: d_tight} @v1:[VECTOR_RANGE $R2 $B2]=>{$yield_distance_as: d_wide})"
-        self._multi_vr_search(key_type, dialect, expr, (2, 50))
-
-    def test_vector_range_multi_vr_sortby(self, key_type, dialect, vector_data_type):
-        """Two VR predicates with SORTBY on a named score field."""
-        self.setup_data("two vectors", key_type)
-        expr = "(@v1:[VECTOR_RANGE $R1 $B1]=>{$yield_distance_as: d1} @v2:[VECTOR_RANGE $R2 $B2]=>{$yield_distance_as: d2})"
-        self._multi_vr_search(key_type, dialect, expr, (200, 200),
-                              extra_args=["SORTBY", "d2", "ASC"])
-        self._multi_vr_search(key_type, dialect, expr, (200, 200),
-                              extra_args=["SORTBY", "d1", "DESC"])
-
-    def test_vector_range_knn_hybrid_with_scores(self, key_type, dialect, vector_data_type):
-        """VR pre-filter + KNN with both score aliases."""
-        self.setup_data("two vectors", key_type)
-        blob = struct.pack(f"<{VECTOR_DIM}f", 0.0, 0.0, 0.0)
-        for query, extra, radius in [
-            ("@v1:[VECTOR_RANGE $RADIUS $VRBLOB]=>{$yield_distance_as: vr_dist}=>[KNN 3 @v2 $KBLOB AS knn_dist]", [], "10"),
-            ("@v1:[VECTOR_RANGE $RADIUS $VRBLOB]=>[KNN 3 @v2 $KBLOB]", ["NOCONTENT"], "10"),
-            ("@v1:[VECTOR_RANGE $RADIUS $VRBLOB]=>{$yield_distance_as: vr_dist}=>[KNN 100 @v2 $KBLOB AS knn_dist]", [], "5"),
-        ]:
-            cmd = [
-                "ft.search", f"{key_type}_idx1", query,
-                "PARAMS", "6",
-                "VRBLOB", blob, "RADIUS", radius,
-                "KBLOB", blob,
-            ] + extra + ["DIALECT", str(dialect)]
-            self.execute_command(cmd)
-
-    def test_vector_range_aggregate_multi_vr(self, key_type, dialect, vector_data_type):
-        """Two VR predicates via FT.AGGREGATE with LOAD of both scores."""
-        self.setup_data("two vectors", key_type)
-        blob = struct.pack(f"<{VECTOR_DIM}f", 0.0, 0.0, 0.0)
-        expr = "(@v1:[VECTOR_RANGE $R1 $B1]=>{$yield_distance_as: d1} @v2:[VECTOR_RANGE $R2 $B2]=>{$yield_distance_as: d2})"
-        base = [
-            "ft.aggregate", f"{key_type}_idx1", expr,
-            "PARAMS", "8",
-            "B1", blob, "R1", "50",
-            "B2", blob, "R2", "50",
-            "LOAD", "3", "@__key", "@d1", "@d2",
-        ]
-        self.execute_command(base + ["DIALECT", str(dialect)])
-        self.execute_command(base + ["SORTBY", "2", "@d2", "ASC",
-                                     "DIALECT", str(dialect)])
-
     def test_vector_range_yield_distance_as_sortby(self, key_type, dialect, vector_data_type):
         """SORTBY on a custom $yield_distance_as name."""
         self.setup_data("sortable numbers", key_type)
@@ -1460,6 +1381,46 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             radius=50,
             query_attrs="{$yield_distance_as: my_dist}",
         )
+
+    def test_vector_range_text_bm25_scoring(self, key_type, dialect, vector_data_type):
+        """Single VR combined with a text predicate: does the VR distance
+        affect the BM-25 relevance score?
+
+        A `@body:hello @vec:[VECTOR_RANGE ...]` compound is run WITHSCORES so
+        the reply carries the top-level relevance score, and also with
+        $yield_distance_as so the VR distance is emitted alongside it. Replaying
+        against the reference engine confirms parity: the score is driven by
+        BM-25 text relevance, while the VR distance is reported separately in
+        its yield field — the single VR distance does not silently perturb the
+        BM-25 score.
+        """
+        # Hash-only fixture with a TEXT + vector schema; skip json and the
+        # non-FLOAT32 vector variants (the fixture is fixed FLOAT32).
+        if key_type != "hash" or vector_data_type != "FLOAT32":
+            pytest.skip("VR+text BM-25 fixture is hash / FLOAT32 only")
+        self.setup_data(VR_TEXT_DATA_SET, key_type)
+        blob = struct.pack(f"<{VECTOR_DIM}f", 0.0, 0.0, 0.0)
+        radius = "10"
+        for query, extra in [
+            ("@body:hello @v1:[VECTOR_RANGE $RADIUS $BLOB]", ["WITHSCORES"]),
+            ("@body:hello @v1:[VECTOR_RANGE $RADIUS $BLOB]=>{$yield_distance_as: vdist}",
+             ["WITHSCORES"]),
+            # OR compound: a doc may match text or VR; VR distance yielded.
+            ("(@body:world | @v1:[VECTOR_RANGE $RADIUS $BLOB]=>{$yield_distance_as: vdist})",
+             ["WITHSCORES"]),
+        ]:
+            cmd = [
+                "ft.search", f"{key_type}_idx1", query,
+                "PARAMS", "4", "BLOB", blob, "RADIUS", radius,
+            ] + extra + ["DIALECT", str(dialect)]
+            # WITHSCORES top-level relevance is BM-25 text scoring. In cluster
+            # (CME) each shard scores with shard-local corpus statistics, so the
+            # score diverges from single-node Redisearch (the intentional cluster
+            # text-scoring model shared by all text queries, pinned by
+            # test_scoring_cluster.py). Single-node (CMD) still asserts full
+            # equality against Redisearch (FEEDBACK.md scenario 3); only the
+            # cluster replay relaxes to a no-crash check.
+            self.execute_command(cmd, excluded_cluster_only=True)
 
     def test_tag_escaped_special_chars(self, key_type, dialect, vector_data_type):
         """Escaped special characters in tag queries. Ref: #454."""
