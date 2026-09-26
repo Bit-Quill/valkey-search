@@ -546,7 +546,9 @@ class TestVectorRange(ValkeySearchTestCaseBase):
 
     def test_results_ascending_distance_order(self):
         """
-        Standalone Vector Range results are sorted by ascending distance.
+        A plain Vector Range query is NOT ordered by distance (Redisearch
+        parity): results come back in document (key) order. Nearest-first
+        ordering is available via an explicit SORTBY on the yielded distance.
         Req: 5.1, 5.2
         """
         client = self.server.get_new_client()
@@ -554,27 +556,41 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         self._load_vector_data(client)
 
         query_blob = float_to_bytes(QUERY_VEC)
+        # Default order (no SORTBY): document/key order, not distance order.
         result = self._search(
             client, "idx",
             "@vec:[VECTOR_RANGE 100 $blob]=>{$yield_distance_as: dist}",
             "PARAMS", "2", "blob", query_blob,
         )
         assert result[0] == 5
-        parsed = parse_result_with_fields(result)
-        # Extract distances in result order
+        returned_keys = [result[i].decode("utf-8") for i in range(1, len(result), 2)]
+        # Document order == insertion order. Compare against keys sorted by their
+        # numeric suffix rather than lexicographically, so this stays correct if
+        # the dataset ever grows past single-digit keys (doc:2 < doc:10).
+        expected_keys = sorted(returned_keys, key=lambda k: int(k.split(":")[1]))
+        assert returned_keys == expected_keys, (
+            f"Default order should be document order, got: {returned_keys}"
+        )
+
+        # With an explicit SORTBY on the distance alias, results are
+        # nearest-first (non-decreasing distance).
+        sorted_result = self._search(
+            client, "idx",
+            "@vec:[VECTOR_RANGE 100 $blob]=>{$yield_distance_as: dist}",
+            "PARAMS", "2", "blob", query_blob,
+            "SORTBY", "dist", "ASC",
+        )
         distances = []
-        for i in range(1, len(result), 2):
-            fields = result[i + 1]
+        for i in range(1, len(sorted_result), 2):
+            fields = sorted_result[i + 1]
             field_dict = {
                 fields[j].decode("utf-8"): fields[j + 1]
                 for j in range(0, len(fields), 2)
             }
-            dist = float(field_dict["dist"])
-            distances.append(dist)
-        # Verify non-decreasing order
+            distances.append(float(field_dict["dist"]))
         for i in range(len(distances) - 1):
             assert distances[i] <= distances[i + 1], (
-                f"Distances not in ascending order: {distances}"
+                f"SORTBY dist ASC not in ascending order: {distances}"
             )
 
     # =================================================================

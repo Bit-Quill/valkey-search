@@ -32,6 +32,7 @@
 #include "src/coordinator/coordinator.pb.h"
 #include "src/coordinator/search_converter.h"
 #include "src/coordinator/util.h"
+#include "src/indexes/scoring/scorer.h"
 #include "src/indexes/vector_base.h"
 #include "src/query/multi_search.h"
 #include "src/query/search.h"
@@ -160,6 +161,12 @@ struct SearchPartitionResultsTracker {
       // Single-VR model: the VR distance is carried in Neighbor::distance
       // above. Cluster merge concatenates per-shard in-radius neighbors; the
       // caller re-sorts by ascending distance. No score-slot side channel.
+      // The wire format is unchanged; a compound-OR match with no VR distance
+      // is transmitted as a +inf distance, so reconstruct has_vr_distance from
+      // the bit pattern (IsInf is -ffast-math-safe) rather than adding a proto
+      // field.
+      neighbor.has_vr_distance =
+          !indexes::scoring::IsInf(neighbor_entry->distance());
       neighbor.score = neighbor_entry->score();
       AddResult(neighbor);
     }

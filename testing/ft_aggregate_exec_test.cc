@@ -14,6 +14,7 @@
 #include "gtest/gtest.h"
 #include "src/attribute_data_type.h"
 #include "src/commands/ft_aggregate_parser.h"
+#include "src/indexes/scoring/scorer.h"
 #include "src/indexes/vector_base.h"
 #include "src/utils/cancel.h"
 #include "src/utils/string_interning.h"
@@ -658,15 +659,15 @@ TEST_F(CreateRecordsFromNeighborsTest, SingleVrDistancePopulated) {
                   1.5f);
 }
 
-// A non-VR OR-branch match carries distance == +infinity, meaning "no VR
-// distance"; the VR record field is left nil.
+// A non-VR OR-branch match outside the radius carries no VR distance
+// (has_vr_distance == false); the VR record field is left nil.
 TEST_F(CreateRecordsFromNeighborsTest, UnmatchedVrLeavesFieldNil) {
   auto params = MakeParams("__score", "d1");
   // index layout: 0=__key, 1=__score, 2=d1
 
   std::vector<indexes::Neighbor> neighbors;
-  neighbors.push_back(
-      MakeNeighbor("k1", std::numeric_limits<float>::infinity()));
+  neighbors.push_back(MakeNeighbor("k1", indexes::scoring::PositiveInf()));
+  neighbors.back().has_vr_distance = false;
 
   RecordSet records(params.get());
   VMSDK_EXPECT_OK(

@@ -158,31 +158,45 @@ struct Neighbor {
   float distance;
   float score;
   uint64_t sequence_number;
+  // False only for a compound VECTOR_RANGE match that carries no VR distance
+  // (e.g. a doc matched via the non-VR branch of an OR and lies outside the
+  // radius). The distance field then holds a sentinel; readers gate the
+  // yielded-distance field, sorting, and aggregate LOAD on this flag rather
+  // than inspecting the float, which is unreliable under -ffast-math.
+  bool has_vr_distance;
   std::optional<RecordsMap> attribute_contents;
 
-  Neighbor() : distance(0.0f), score(kDefaultScore), sequence_number(0) {}
+  Neighbor()
+      : distance(0.0f),
+        score(kDefaultScore),
+        sequence_number(0),
+        has_vr_distance(true) {}
   Neighbor(const InternedStringPtr &external_id, float distance)
       : external_id(external_id),
         distance(distance),
         score(distance),
-        sequence_number(0) {}
+        sequence_number(0),
+        has_vr_distance(true) {}
   Neighbor(const InternedStringPtr &external_id, float distance, float score)
       : external_id(external_id),
         distance(distance),
         score(score),
-        sequence_number(0) {}
+        sequence_number(0),
+        has_vr_distance(true) {}
   Neighbor(const InternedStringPtr &external_id, float distance,
            std::optional<RecordsMap> &&attribute_contents)
       : external_id(external_id),
         distance(distance),
         score(distance),
         sequence_number(0),
+        has_vr_distance(true),
         attribute_contents(std::move(attribute_contents)) {}
   Neighbor(Neighbor &&other) noexcept
       : external_id(std::move(other.external_id)),
         distance(other.distance),
         score(other.score),
         sequence_number(other.sequence_number),
+        has_vr_distance(other.has_vr_distance),
         attribute_contents(std::move(other.attribute_contents)) {}
   Neighbor &operator=(Neighbor &&other) noexcept {
     if (this != &other) {
@@ -190,6 +204,7 @@ struct Neighbor {
       distance = other.distance;
       score = other.score;
       sequence_number = other.sequence_number;
+      has_vr_distance = other.has_vr_distance;
       attribute_contents = std::move(other.attribute_contents);
     }
     return *this;
@@ -340,7 +355,10 @@ class VectorBase : public IndexBase {
     if (!result.ok()) {
       return result.status();
     }
-    float distance = result->first;
+    // Apply the cosine lower-bound clamp (self-match to 0.0) exactly as the
+    // standalone SearchRange path does, so plain and compound VR queries agree
+    // at the radius boundary. The antipodal (~2) upper bound is left raw.
+    float distance = ClampCosineDistance(result->first);
     if (distance > radius) {
       return std::nullopt;
     }
@@ -468,7 +486,13 @@ class VectorBase : public IndexBase {
     const float kClampEpsilon =
         static_cast<float>(dimensions_) * std::numeric_limits<float>::epsilon();
     if (dist <= kClampEpsilon) return 0.0f;
-    if (dist >= 2.0f - kClampEpsilon) return std::nextafter(2.0f, 3.0f);
+    // Do NOT clamp the upper (antipodal) bound. For compatibility the raw
+    // cosine distance is compared against the radius, so whether an ~2.0
+    // antipodal match falls inside radius 2 is decided by the raw value's FP
+    // noise. Forcing it to exactly 2.0 (or to nextafter(2,3)) would make the
+    // inclusive `<= radius` test disagree at the boundary in one direction or
+    // the other. Returning the raw distance keeps the just-below-2 and
+    // just-above-2 cases correct.
     return dist;
   }
 

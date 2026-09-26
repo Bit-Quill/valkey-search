@@ -22,7 +22,6 @@
 #include "src/commands/commands.h"
 #include "src/commands/ft_search_parser.h"
 #include "src/indexes/index_base.h"
-#include "src/indexes/scoring/scorer.h"
 #include "src/indexes/vector_base.h"
 #include "src/metrics.h"
 #include "src/query/response_generator.h"
@@ -37,13 +36,13 @@ namespace valkey_search {
 
 namespace {
 // A standalone/compound VR neighbor carries its distance in Neighbor::distance.
-// Non-VR OR-branch matches use +infinity as a sentinel meaning "no VR distance"
-// (see SearchVectorRangeQuery). IsInf (bit-pattern check) rather than
-// `!= infinity()`: the build uses -ffast-math (-ffinite-math-only), under which
-// the compiler assumes no infinities and folds the direct comparison to a
-// constant, defeating the sentinel.
+// A non-VR OR-branch match that lies outside the radius carries no VR distance;
+// SearchVectorRangeQuery marks it with has_vr_distance=false (the distance
+// float then holds a sort-last sentinel). Gate the yielded-distance field,
+// sorting, and sort keys on the flag rather than the float, which is unreliable
+// under -ffast-math (-ffinite-math-only folds infinity comparisons away).
 inline bool HasVrDistance(const indexes::Neighbor &neighbor) {
-  return !indexes::scoring::IsInf(neighbor.distance);
+  return neighbor.has_vr_distance;
 }
 
 // FT.SEARCH idx "*=>[KNN 10 @vec $BLOB AS score]" PARAMS 2 BLOB
@@ -64,6 +63,14 @@ void ReplyAvailNeighbors(ValkeyModuleCtx *ctx,
 void ReplyScoreTopLevel(ValkeyModuleCtx *ctx, float score);
 
 bool HasTextRelevance(const SearchCommand &parameters) {
+  // A plain VECTOR_RANGE query is a non-vector query but carries no text
+  // relevance: for compatibility a WITHSCORES score of 0 is reported (the
+  // distance is surfaced via $yield_distance_as / __<field>_score, not the
+  // score slot). Only treat it as having relevance when it also has a text
+  // predicate.
+  if (parameters.has_vector_range) {
+    return query::QueryHasTextPredicate(parameters);
+  }
   return parameters.IsNonVectorQuery() ||
          query::QueryHasTextPredicate(parameters);
 }
@@ -258,9 +265,9 @@ void SerializeNonVectorNeighbors(ValkeyModuleCtx *ctx,
   auto range = search_result.GetSerializationRange(command);
 
   // The single VR distance field name. Empty unless the query used an explicit
-  // $yield_distance_as alias: Redisearch surfaces the VR distance ONLY under
-  // that alias, never a default "__<field>_score", so an empty name here
-  // suppresses the field entirely (matching RL).
+  // $yield_distance_as alias: for compatibility the VR distance is surfaced
+  // ONLY under that alias, never a default "__<field>_score", so an empty name
+  // here suppresses the field entirely.
   std::string vr_field;
   if (command.IsVectorRangeQuery()) {
     vr_field = query::GetVrScoreFieldName(command);
@@ -281,6 +288,12 @@ void SerializeNonVectorNeighbors(ValkeyModuleCtx *ctx,
   ValkeyModule_ReplyWithArray(ctx, elements_per_result * range.count() + 1);
   ReplyAvailNeighbors(ctx, search_result, command);
 
+  // WITHSCORES relevance score. A plain VECTOR_RANGE query carries no text
+  // relevance, so for compatibility 0 is reported (the distance is a separate
+  // yielded field, not the score); only emit Neighbor::score when the query
+  // actually has relevance.
+  const bool has_relevance = HasTextRelevance(command);
+
   std::string prefix_str;
   if (command.with_sort_keys) {
     prefix_str = VALKEY_SEARCH_COMPATIBILITY_FIX(
@@ -298,11 +311,12 @@ void SerializeNonVectorNeighbors(ValkeyModuleCtx *ctx,
 
     // Score as top-level element when WITHSCORES is specified
     if (command.with_scores) {
-      ReplyScoreTopLevel(ctx, neighbors[i].score);
+      ReplyScoreTopLevel(ctx, has_relevance ? neighbors[i].score : 0.0f);
     }
 
     // Prefix the sort key: '#' for NUMERIC fields, '$' for string fields
-    // (RediSearch-compatible). A SORTBY on the VR distance alias must emit the
+    // Prefix the sort key: '#' for NUMERIC fields, '$' for string fields (for
+    // compatibility). A SORTBY on the VR distance alias must emit the
     // formatted distance (Neighbor::distance) with the numeric '#' prefix; it
     // is not in attribute_contents, so GetSortKeyValue() would return "".
     if (command.with_sort_keys) {

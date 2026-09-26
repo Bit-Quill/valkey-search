@@ -234,16 +234,16 @@ query::EvaluationResult PrefilterEvaluator::EvaluateVectorRange(
   if (!vector_index) {
     return query::EvaluationResult(false);
   }
-  auto distance_result =
-      vector_index->ComputeDistanceFromRecord(*key_, query_vector);
-  if (!distance_result.ok()) {
+  auto within = vector_index->IsWithinVectorRange(
+      *key_, query_vector, static_cast<float>(predicate.GetRadius()));
+  if (!within.ok() || !within->has_value()) {
     return query::EvaluationResult(false);
   }
-  float distance = distance_result->first;
-  if (distance > static_cast<float>(predicate.GetRadius())) {
-    return query::EvaluationResult(false);
-  }
-  return query::EvaluationResult(true, distance);
+  // IsWithinVectorRange applies the same cosine lower-bound clamp (self-match
+  // to 0.0) as the standalone SearchRange path, so plain and compound VR
+  // queries agree at the radius boundary. The antipodal (~2) upper bound is
+  // intentionally left raw on both paths for compatibility.
+  return query::EvaluationResult(true, within->value());
 }
 
 // ComputeDistanceFromRecord without query_magnitude — used by VR search path.

@@ -778,14 +778,13 @@ absl::StatusOr<std::vector<indexes::Neighbor>> SearchVectorRangeQuery(
         // Single-VR model: SearchRange already sets each neighbor's distance;
         // Neighbor::distance is the authoritative VR distance carried through
         // serialization and cluster merge (which concatenates per-shard
-        // results). Sort by ascending distance so results are nearest-first.
-        // The sort is required because SearchRange returns in-radius neighbors
-        // in graph-traversal / scan order, not distance order, and clients
-        // (and the reference engine) expect range results ordered by distance.
+        // results). For compatibility, a plain VECTOR_RANGE query is NOT
+        // ordered by distance: return range matches in document order, so
+        // order by key here (deterministic, and what a client sees without an
+        // explicit SORTBY). Clients wanting nearest-first pass
+        // SORTBY <yield_alias>, which ApplySorting handles later.
         std::sort(raw_neighbors.begin(), raw_neighbors.end(),
                   [](const indexes::Neighbor &a, const indexes::Neighbor &b) {
-                    if (a.distance != b.distance)
-                      return a.distance < b.distance;
                     return a.external_id->Str() < b.external_id->Str();
                   });
         return raw_neighbors;
@@ -895,23 +894,31 @@ absl::StatusOr<std::vector<indexes::Neighbor>> SearchVectorRangeQuery(
         // VR child was never evaluated, so recompute the distance directly for
         // this key: Redisearch yields the distance for every returned doc that
         // lies within the radius, regardless of which branch matched. A key
-        // that is outside the radius (or not tracked in the vector index) gets
-        // +infinity so it sorts after all genuine VR matches and carries no
-        // yielded distance — matching a text-only match with no vdist.
+        // that is outside the radius (or not tracked in the vector index) has
+        // no VR distance: mark has_vr_distance=false so it sorts after all
+        // genuine VR matches and carries no yielded distance, matching a
+        // text-only match with no vdist. The sentinel is kept in the float only
+        // to sort last; readers must use has_vr_distance, not the float value.
         float distance;
+        bool has_vr_distance = true;
         if (eval_result.HasVrScore()) {
           distance = eval_result.vr_distance;
         } else if (vr_vector_index != nullptr) {
           auto within = vr_vector_index->IsWithinVectorRange(
               key, vr_predicate->GetQueryVector(),
               static_cast<float>(vr_predicate->GetRadius()));
-          distance = (within.ok() && within->has_value())
-                         ? within->value()
-                         : std::numeric_limits<float>::infinity();
+          if (within.ok() && within->has_value()) {
+            distance = within->value();
+          } else {
+            distance = indexes::scoring::PositiveInf();
+            has_vr_distance = false;
+          }
         } else {
-          distance = std::numeric_limits<float>::infinity();
+          distance = indexes::scoring::PositiveInf();
+          has_vr_distance = false;
         }
         neighbors.emplace_back(key, distance);
+        neighbors.back().has_vr_distance = has_vr_distance;
         if (needs_dedup) {
           result_keys.insert(key->Str().data());
         }
@@ -930,15 +937,12 @@ absl::StatusOr<std::vector<indexes::Neighbor>> SearchVectorRangeQuery(
     nonvector_results_fetched_limited_count.Increment();
   }
 
-  // Sort by ascending distance; use key as a stable secondary so that results
-  // with equal distance (e.g. negate queries where all items have distance 0)
-  // are returned in lexicographic key order — matching Redis default ordering.
-  // In the single-VR model the VR distance is already in Neighbor::distance
-  // (written above from the propagated EvaluateFull result), so no repair pass
-  // is needed.
+  // For compatibility, compound VECTOR_RANGE results are not ordered by
+  // distance. Return them in document (key) order; an explicit SORTBY is
+  // applied later by ApplySorting. Ordering by key is deterministic and keeps
+  // negate/OR results stable regardless of scan order.
   std::sort(neighbors.begin(), neighbors.end(),
             [](const indexes::Neighbor &a, const indexes::Neighbor &b) {
-              if (a.distance != b.distance) return a.distance < b.distance;
               return a.external_id->Str() < b.external_id->Str();
             });
 
@@ -1000,6 +1004,8 @@ struct ResolvedLeaf {
   // path takes the first posting containing the key in a requested field while
   // the in-iterator path (TermIterator::per_term_idf_) takes the merge heap's
   // front, which InsertValidKeyIterator already field-filtered.
+  // Inline capacity stays small: ResolvedLeaf is a by-value hash-map payload
+  // shared with term/tag leaves, so 200 slots would cost ~3.2 KB per leaf.
   // Expansions never stem, so `field_mask` gates every entry.
   struct ExpansionTerm {
     indexes::text::InvasivePtr<indexes::text::Postings> postings;
@@ -1009,8 +1015,8 @@ struct ResolvedLeaf {
 };
 
 // Keyed on the base Predicate* (not TermPredicate*) so the per-document scoring
-// walk can look leaves up without a dynamic_cast: a hit is a scored term leaf,
-// a miss is a non-scored text predicate (prefix/suffix/fuzzy).
+// walk can look leaves up without a dynamic_cast: a hit is a scored leaf, a
+// miss is a leaf that resolved to nothing scoreable.
 using ResolvedLeaves = absl::flat_hash_map<const Predicate *, ResolvedLeaf>;
 
 // Collapses an all-fields mask (what the parser builds for an unscoped query)
@@ -1043,13 +1049,14 @@ void AddExpansionTerm(
 //   - the posting lists (the expensive radix-tree lookup + stem expansion),
 //   - the document frequency (dt), and
 //   - the per-term BM25 weight (IDF).
-// It also performs the one dynamic_cast needed to tell scored TermPredicates
-// apart from non-scored text predicates (prefix/suffix/fuzzy) here, so the
-// per-document walk can distinguish them with a cheap map lookup instead.
+// It also performs the dynamic_casts needed to tell the concrete text predicate
+// types apart here, so the per-document walk can distinguish them with a cheap
+// map lookup instead.
 // Results go into `resolved`, keyed on the base Predicate*; the per-document
 // walk then only does the cheap per-key term-frequency lookup. A leaf whose
 // term (and all its variants) is absent from the index resolves to empty
 // postings.
+
 void ResolveLeaves(const Predicate *predicate, uint32_t total_docs,
                    const indexes::scoring::Scorer *scorer,
                    ResolvedLeaves &resolved) {
@@ -1068,21 +1075,19 @@ void ResolveLeaves(const Predicate *predicate, uint32_t total_docs,
       // dynamic_cast exactly once here (once per query -- not in the
       // per-document ScoreNode path). Prefix/suffix/fuzzy resolve to their
       // expansion terms (scored one-term-not-sum); ScoreNode picks a single
-      // matched term per document. Infix is unimplemented, so an infix query
-      // aborts before scoring and never reaches this point. The three expansion
-      // kinds differ only in which words the pattern expands to, so they share
-      // one collector and one `max_words` bound.
+      // matched term per document. Infix is unimplemented
+      // (InfixPredicate::BuildTextIterator and ::Evaluate both CHECK(false)),
+      // so an infix query aborts before scoring and never reaches this point.
+      // The three expansion kinds differ only in which words the pattern
+      // expands to, so they share one collector and one `max_words` bound.
       const uint32_t max_words = options::GetMaxTermExpansions().GetValue();
       ResolvedLeaf expansion_leaf;
       auto add_expansion = [&](const indexes::text::Rax &tree,
                                absl::string_view pattern) {
         auto it = tree.GetWordIterator(pattern);
         for (uint32_t n = 0; !it.Done() && n < max_words; ++n, it.Next()) {
-          auto postings = it.GetPostingsTarget();
-          if (postings) {
-            AddExpansionTerm(std::move(postings), total_docs, scorer,
-                             expansion_leaf);
-          }
+          AddExpansionTerm(it.GetPostingsTarget(), total_docs, scorer,
+                           expansion_leaf);
         }
       };
       bool is_expansion = true;
