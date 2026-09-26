@@ -286,6 +286,9 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             "DIALECT", str(dialect),
         ]
         self.execute_command(_join_search_query(new_cmd), excluded=excluded)
+        # A query Redis rejects is stored as an exception answer, which the
+        # replay never compares; fail generation instead of storing it.
+        assert not self.answers[-1]["exception"], f"Redis rejected {new_cmd}"
 
     def checkvec(self, dialect, *orig_cmd, knn=10000, score_as="", query_vector=[0] * VECTOR_DIM):
         '''Check vector queries only.'''
@@ -1141,7 +1144,9 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
         self.setup_data(f"vector data {metric} {algo}", key_type)
         vector_points = [-.75, .75]
         radii = [0, 0.5, 2.0, 100.0]
-        epsilons = [None, 0.0, 0.1]
+        # Redis rejects $epsilon on FLAT and $epsilon 0 (both engines reject
+        # them, so those answers only ever compared two errors).
+        epsilons = [None, 0.1] if algo == "hnsw" else [None]
         for x in vector_points:
             for y in vector_points:
                 for z in vector_points:
@@ -1172,7 +1177,9 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
     def test_vector_range_and_numeric(self, key_type, dialect, vector_data_type):
         """VECTOR_RANGE combined with numeric filter via AND."""
         self.setup_data("sortable numbers", key_type)
-        for r in [5.0, 50.0]:
+        # 200 is the first radius whose matches (docs 00-08) overlap n1 >= 0;
+        # at 5 and 50 both answers are empty.
+        for r in [5.0, 50.0, 200.0]:
             self.checkrange(
                 dialect,
                 f"ft.search {key_type}_idx1 * @n1:[0 +inf] NOCONTENT",
@@ -1224,9 +1231,10 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
                 radius=r,
             )
         for r in [1.0, 5.0]:
+            # The . is escaped: Redis matches nothing for @t1:{one.one0}.
             self.checkrange(
                 dialect,
-                f"ft.search {key_type}_idx1 * | @t1:{{one.one0}} NOCONTENT",
+                f"ft.search {key_type}_idx1 * | @t1:{{one\\.one0}} NOCONTENT",
                 radius=r,
             )
         # VR OR numeric with varying radii
@@ -1280,7 +1288,7 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             )
         self.checkrange(
             dialect,
-            f"ft.search {key_type}_idx1 * @t1:{{one.one0}} NOCONTENT",
+            f"ft.search {key_type}_idx1 * @t1:{{one\\.one0}} NOCONTENT",
             radius=5.0, negate=True,
         )
 
@@ -1309,18 +1317,8 @@ class TestAggregateCompatibility(BaseCompatibilityTest):
             )
         self.checkrange(
             dialect,
-            f"ft.search {key_type}_idx1 * | @t1:{{one.one0}} NOCONTENT",
+            f"ft.search {key_type}_idx1 * | @t1:{{one\\.one0}} NOCONTENT",
             radius=5.0, negate=True,
-            # Query: `-@v1:[VECTOR_RANGE 5 $b] | @t1:{one.one0}`. valkey-search
-            # and RediSearch agree on the negated-VR set (:02..:14); they differ
-            # only on key :00, which valkey-search adds back via the tag branch
-            # (:00's t1 is exactly `one.one0`) and RediSearch does not. Including
-            # :00 is the internally consistent answer -- the sibling @n1/@t3
-            # cases above keep such a document -- so we do not chase RediSearch
-            # here. The exact RediSearch-side cause (tag tokenization of the `.`
-            # vs OR/NOT precedence) is unconfirmed; this case is tolerated as a
-            # known divergence and compared no-crash only.
-            excluded=True,
         )
 
     def test_vector_range_sortby(self, key_type, dialect, vector_data_type):
