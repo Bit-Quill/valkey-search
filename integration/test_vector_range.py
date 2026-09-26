@@ -1267,6 +1267,42 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         assert result[0] >= 0  # completed without crashing
         assert client.ping()
 
+    def test_cosine_radius_zero_self_match_compound(self):
+        """
+        COSINE VECTOR_RANGE clamps the self-match distance to 0 in plain and
+        compound (VR AND tag) queries alike, so radius 0 returns the exact
+        self vector with a yielded distance of 0, and both query shapes yield
+        the same distance for every doc. The non-unit query exposes the
+        floating-point error (about 1.8e-7) the clamp removes. Req: 2.1
+        """
+        client = self.server.get_new_client()
+        query_blob = float_to_bytes([0.1, 0.0, 0.0])
+        vr = "@vec:[VECTOR_RANGE {} $blob]=>{{$yield_distance_as: dist}}"
+        for algo, create in (("FLAT", self._create_flat_index),
+                             ("HNSW", self._create_hnsw_index)):
+            prefix = f"{algo}:"
+            create(client, index_name=algo, prefix=prefix, distance="COSINE",
+                   extra_fields=["tag", "TAG"])
+            # Same direction as the query, orthogonal, antipodal.
+            for i, vec in enumerate(([1.0, 0.0, 0.0], [0.0, 1.0, 0.0],
+                                     [-1.0, 0.0, 0.0])):
+                client.hset(f"{prefix}{i}", mapping={
+                    "vec": float_to_bytes(vec), "tag": "x"})
+
+            def distances(query):
+                result = self._search(
+                    client, algo, query,
+                    "PARAMS", "2", "blob", query_blob, "RETURN", "1", "dist",
+                )
+                return {key: float(fields["dist"]) for key, fields
+                        in parse_result_with_fields(result).items()}
+
+            assert distances(vr.format(0)) == {f"{prefix}0": 0.0}
+            assert distances(vr.format(0) + " @tag:{x}") == {f"{prefix}0": 0.0}
+            plain = distances(vr.format(2.5))
+            assert len(plain) == 3
+            assert distances(vr.format(2.5) + " @tag:{x}") == plain
+
     # =================================================================
     # 41. SORTBY DESC with Vector Range
     # =================================================================

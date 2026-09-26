@@ -355,9 +355,8 @@ class VectorBase : public IndexBase {
     if (!result.ok()) {
       return result.status();
     }
-    // Apply the cosine lower-bound clamp (self-match to 0.0) exactly as the
-    // standalone SearchRange path does, so plain and compound VR queries agree
-    // at the radius boundary. The antipodal (~2) upper bound is left raw.
+    // Apply the cosine clamp exactly as the standalone SearchRange path does,
+    // so plain and compound VR queries agree at the radius boundary.
     float distance = ClampCosineDistance(result->first);
     if (distance > radius) {
       return std::nullopt;
@@ -486,13 +485,12 @@ class VectorBase : public IndexBase {
     const float kClampEpsilon =
         static_cast<float>(dimensions_) * std::numeric_limits<float>::epsilon();
     if (dist <= kClampEpsilon) return 0.0f;
-    // Do NOT clamp the upper (antipodal) bound. For compatibility the raw
-    // cosine distance is compared against the radius, so whether an ~2.0
-    // antipodal match falls inside radius 2 is decided by the raw value's FP
-    // noise. Forcing it to exactly 2.0 (or to nextafter(2,3)) would make the
-    // inclusive `<= radius` test disagree at the boundary in one direction or
-    // the other. Returning the raw distance keeps the just-below-2 and
-    // just-above-2 cases correct.
+    // A near-antipodal distance is reported just above 2, so radius 2 excludes
+    // it. The raw value cannot decide the boundary: it is FP noise that differs
+    // from Redis's. For (-0.75,-0.75,-0.75) vs (1.5,1.5,1.5) valkey-search
+    // computes 1.99999988 and Redis 2.00000024, and the compatibility answers
+    // expect the antipode to be excluded at radius 2.
+    if (dist >= 2.0f - kClampEpsilon) return std::nextafter(2.0f, 3.0f);
     return dist;
   }
 
