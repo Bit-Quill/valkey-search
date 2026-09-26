@@ -314,6 +314,86 @@ class TestVectorRange(ValkeySearchTestCaseBase):
         keys = parse_result_keys(result)
         assert keys == {"doc:0", "doc:1", "doc:3"}
 
+    # =================================================================
+    # 7b. Vector Range OR: a non-VR-branch match outside the radius
+    #     carries no distance
+    # =================================================================
+
+    @pytest.mark.parametrize(
+        "non_vr, vr_first",
+        [
+            ("@category:{A}", False),
+            ("@category:{A}", True),
+            ("@price:[25 +inf]", False),
+            ("@body:world", False),
+        ],
+        ids=["tag_or_vr", "vr_or_tag", "numeric_or_vr", "text_or_vr"],
+    )
+    def test_vector_range_or_no_distance_outside_radius(self, non_vr,
+                                                        vr_first):
+        """
+        In "<non-VR> | VR", a doc outside the radius that matched only the
+        non-VR branch has no VR distance (as in Redisearch): no yield field in
+        FT.SEARCH or FT.AGGREGATE, sorted after the real distances for SORTBY
+        ASC and DESC, and a nil WITHSORTKEYS key. In-radius docs carry their
+        distance whichever branch matched.
+        """
+        client = self.server.get_new_client()
+        self._create_flat_index(client, extra_fields=[
+            "category", "TAG", "price", "NUMERIC", "body", "TEXT",
+        ])
+        extra = {
+            "doc:0": {"category": "A", "price": "10", "body": "hello"},
+            "doc:1": {"category": "B", "price": "20", "body": "hello"},
+            "doc:2": {"category": "A", "price": "30", "body": "world"},
+            "doc:3": {"category": "A", "price": "40", "body": "world"},
+            "doc:4": {"category": "A", "price": "50", "body": "world"},
+        }
+        self._load_vector_data(client, extra_data=extra)
+
+        # radius=5 matches doc:0 (0), doc:1 (1), doc:2 (4). Each non-VR branch
+        # matches doc:2 (in radius) plus doc:3 and doc:4 (outside it).
+        vr = "@vec:[VECTOR_RANGE 5 $blob]=>{$yield_distance_as: d}"
+        query = f"{vr} | {non_vr}" if vr_first else f"{non_vr} | {vr}"
+        params = ["PARAMS", "2", "blob", float_to_bytes(QUERY_VEC)]
+        expected = {"doc:0": 0.0, "doc:1": 1.0, "doc:2": 4.0}
+        no_distance = {"doc:3", "doc:4"}
+
+        result = self._search(client, "idx", query, "RETURN", "1", "d",
+                              *params)
+        assert result[0] == 5
+        parsed = parse_result_with_fields(result)
+        assert {k: float(f["d"]) for k, f in parsed.items() if "d" in f} == (
+            expected
+        )
+        assert {k for k, f in parsed.items() if "d" not in f} == no_distance
+
+        for order in ("ASC", "DESC"):
+            result = self._search(client, "idx", query, "SORTBY", "d", order,
+                                  "RETURN", "1", "d", *params)
+            keys = [result[i].decode() for i in range(1, len(result), 2)]
+            assert keys[:3] == sorted(expected, key=expected.get,
+                                      reverse=(order == "DESC")), order
+            assert set(keys[3:]) == no_distance, order
+
+        result = self._search(client, "idx", query, "SORTBY", "d", "ASC",
+                              "WITHSORTKEYS", "RETURN", "1", "d", *params)
+        sort_keys = {result[i].decode(): result[i + 1]
+                     for i in range(1, len(result), 3)}
+        assert sort_keys == {"doc:0": b"#0", "doc:1": b"#1", "doc:2": b"#4",
+                             "doc:3": None, "doc:4": None}
+
+        result = self._aggregate(client, "idx", query, "LOAD", "1", "@price",
+                                 *params)
+        rows = [{row[i].decode(): row[i + 1] for i in range(0, len(row), 2)}
+                for row in result[1:]]
+        assert {int(r["price"]): float(r["d"]) for r in rows if "d" in r} == {
+            10: 0.0, 20: 1.0, 30: 4.0,
+        }
+        assert sorted(int(r["price"]) for r in rows if "d" not in r) == [
+            40, 50,
+        ]
+
 
     # =================================================================
     # 8. Negated Vector Range
