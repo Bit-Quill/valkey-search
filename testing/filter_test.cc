@@ -128,6 +128,17 @@ void InitIndexSchema(MockIndexSchema *index_schema) {
       "vec_id", data_model::AttributeDataType::ATTRIBUTE_DATA_TYPE_HASH, 0);
   VMSDK_EXPECT_OK(vec_index);
   VMSDK_EXPECT_OK(index_schema->AddIndex("vec", "vec", *vec_index));
+
+  // Add an HNSW vector field so VECTOR_RANGE parser tests can distinguish the
+  // HNSW-only $epsilon option (accepted, must be > 0) from FLAT (rejected).
+  auto vec_hnsw_index = indexes::VectorHNSW<float>::Create(
+      CreateHNSWVectorIndexProto(4, data_model::DISTANCE_METRIC_L2, 100, 16,
+                                 200, 10),
+      "vec_hnsw_id", data_model::AttributeDataType::ATTRIBUTE_DATA_TYPE_HASH,
+      0);
+  VMSDK_EXPECT_OK(vec_hnsw_index);
+  VMSDK_EXPECT_OK(
+      index_schema->AddIndex("vec_hnsw", "vec_hnsw", *vec_hnsw_index));
 }
 
 TEST_P(FilterTest, ParseParams) {
@@ -1851,15 +1862,34 @@ INSTANTIATE_TEST_SUITE_P(
             .create_success = true,
         },
         {
-            .test_name = "vector_range_with_epsilon",
+            // $epsilon on a FLAT index is rejected, matching Redis (it is an
+            // HNSW-only option).
+            .test_name = "vector_range_epsilon_flat_rejected",
             .filter = "@vec:[VECTOR_RANGE 1.5 $blob]=>{$epsilon: 0.1}",
+            .create_success = false,
+            .create_expected_error_message =
+                "Invalid option (Error parsing vector similarity parameters)",
+        },
+        {
+            // $epsilon on an HNSW index with a positive value is accepted.
+            .test_name = "vector_range_epsilon_hnsw_accepted",
+            .filter = "@vec_hnsw:[VECTOR_RANGE 1.5 $blob]=>{$epsilon: 0.1}",
             .create_success = true,
         },
         {
+            // $epsilon must be strictly positive on HNSW; 0 is rejected like
+            // Redis.
+            .test_name = "vector_range_epsilon_hnsw_zero_rejected",
+            .filter = "@vec_hnsw:[VECTOR_RANGE 1.5 $blob]=>{$epsilon: 0}",
+            .create_success = false,
+            .create_expected_error_message =
+                "Invalid option (Error parsing vector similarity parameters)",
+        },
+        {
             .test_name = "vector_range_with_both_query_attrs",
-            .filter =
-                "@vec:[VECTOR_RANGE 1.5 $blob]=>{$yield_distance_as: dist; "
-                "$epsilon: 0.01}",
+            .filter = "@vec_hnsw:[VECTOR_RANGE 1.5 "
+                      "$blob]=>{$yield_distance_as: dist; "
+                      "$epsilon: 0.01}",
             .create_success = true,
         },
         {
