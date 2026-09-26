@@ -2115,6 +2115,67 @@ TEST_F(VectorIndexTest, SearchRangeRadiusZeroCosineCompatibility) {
   }
 }
 
+// Compound VECTOR_RANGE queries and reply-time revalidation check one key at a
+// time through IsWithinVectorRange, with the raw (un-normalized) query. It must
+// clamp like SearchRange: the self-match is at distance 0, so radius 0 keeps
+// it, and both paths report the same distance for every key.
+TEST_F(VectorIndexTest, IsWithinVectorRangeCosineClampMatchesSearchRange) {
+  const int kDim = 3;
+  auto hnsw_index = VectorHNSW<float>::Create(
+      CreateHNSWVectorIndexProto(kDim, data_model::DISTANCE_METRIC_COSINE,
+                                 /*initial_cap=*/16, /*m=*/16,
+                                 /*ef_construction=*/200, /*ef_runtime=*/200),
+      "attribute_identifier_1",
+      data_model::AttributeDataType::ATTRIBUTE_DATA_TYPE_HASH, 0);
+  ASSERT_TRUE(hnsw_index.ok());
+  auto flat_index = VectorFlat<float>::Create(
+      CreateFlatVectorIndexProto(kDim, data_model::DISTANCE_METRIC_COSINE,
+                                 /*initial_cap=*/16, /*block_size=*/16),
+      "attribute_identifier_1",
+      data_model::AttributeDataType::ATTRIBUTE_DATA_TYPE_HASH, 0);
+  ASSERT_TRUE(flat_index.ok());
+
+  // Same direction as the query, orthogonal, antipodal.
+  const std::vector<std::vector<float>> vectors = {
+      {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}};
+  // Non-unit query: unclamped, the self-match distance is about 1.8e-7.
+  const std::vector<float> query_vec = {0.1f, 0.0f, 0.0f};
+  absl::string_view query = VectorToStr(query_vec);
+
+  for (VectorBase *index : {static_cast<VectorBase *>(hnsw_index->get()),
+                            static_cast<VectorBase *>(flat_index->get())}) {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      VMSDK_EXPECT_OK(testing_infra::AddVectorRecord(*index, IndexToKey(i),
+                                                     VectorToStr(vectors[i])));
+    }
+    auto self = index->IsWithinVectorRange(IndexToKey(0), query, 0.0f);
+    ASSERT_TRUE(self.ok()) << self.status();
+    ASSERT_TRUE(self->has_value()) << "radius 0 missed the self-match";
+    EXPECT_EQ(**self, 0.0f);
+
+    for (float radius : {0.0f, 2.5f}) {
+      auto result = index->SearchRange(query, radius, CancelNever());
+      ASSERT_TRUE(result.ok()) << result.status();
+      absl::flat_hash_map<std::string, float> expected;
+      for (const auto &n : *result) {
+        expected[std::string(n.external_id->Str())] = n.distance;
+      }
+      for (size_t i = 0; i < vectors.size(); ++i) {
+        auto key = IndexToKey(i);
+        auto within = index->IsWithinVectorRange(key, query, radius);
+        ASSERT_TRUE(within.ok()) << within.status();
+        auto it = expected.find(std::string(key->Str()));
+        ASSERT_EQ(within->has_value(), it != expected.end())
+            << "key " << i << " radius " << radius;
+        if (within->has_value()) {
+          EXPECT_EQ(**within, it->second)
+              << "key " << i << " radius " << radius;
+        }
+      }
+    }
+  }
+}
+
 }  // namespace
 
 }  // namespace valkey_search::indexes
