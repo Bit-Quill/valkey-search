@@ -626,9 +626,14 @@ def compare_results(expected, results):
         return True
 
     if expected["exception"]:
-        print("RL Exception, skipped")
-        #print(f"RL Exception: Raw: {printable_result(results['RL'])}")
-        #print(f"VK: Result: {printable_result(results['VK:'])}")
+        # The reference engine rejected the command but Valkey-search accepted
+        # it. This is a real permissiveness divergence, not a pass -- surface it
+        # loudly instead of silently skipping so a regression cannot hide here.
+        # It is not failed automatically because several such differences are
+        # pre-existing and out of scope for VECTOR_RANGE (e.g. unused PARAMS,
+        # unescaped tag punctuation); the warning keeps them visible for triage.
+        print("WARNING: reference engine raised but Valkey-search accepted "
+              f"(permissiveness divergence). CMD: {cmd}")
         print(TEST_MARKER)
         return True
 
