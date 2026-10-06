@@ -73,16 +73,21 @@ bool TryAddWordKeyIteratorForPrefilter(
     absl::InlinedVector<
         valkey_search::indexes::text::Postings::KeyIterator,
         valkey_search::indexes::text::kWordExpansionInlineCapacity>
-        &key_iterators) {
+        &key_iterators,
+    absl::InlinedVector<
+        valkey_search::indexes::text::InvasivePtr<
+            valkey_search::indexes::text::Postings>,
+        valkey_search::indexes::text::kWordExpansionInlineCapacity> &postings) {
   auto word_iter = text_index.GetPrefix().GetWordIterator(word);
   if (!word_iter.Done() && word_iter.GetWord() == word) {
-    auto postings = word_iter.GetPostingsTarget();
-    if (postings) {
-      auto key_iter = postings->GetKeyIterator();
+    auto target = word_iter.GetPostingsTarget();
+    if (target) {
+      auto key_iter = target->GetKeyIterator();
       if (key_iter.SkipForwardKey(target_key) &&
           key_iter.ContainsFields(field_mask)) {
         if (require_positions) {
           key_iterators.emplace_back(std::move(key_iter));
+          postings.push_back(std::move(target));
         }
         return true;
       }
@@ -101,11 +106,14 @@ EvaluationResult TermPredicate::Evaluate(
   absl::InlinedVector<indexes::text::Postings::KeyIterator,
                       indexes::text::kWordExpansionInlineCapacity>
       key_iterators;
+  absl::InlinedVector<indexes::text::InvasivePtr<indexes::text::Postings>,
+                      indexes::text::kWordExpansionInlineCapacity>
+      postings;
   // Search for the original word - may or may not exist in corpus
   BACKGROUND_PAUSEPOINT("search_term_predicate");
   bool found_original = TryAddWordKeyIteratorForPrefilter(
       text_index, term_, target_key, field_mask, require_positions,
-      key_iterators);
+      key_iterators, postings);
   if (found_original && !require_positions) {
     return EvaluationResult(true);
   }
@@ -123,7 +131,7 @@ EvaluationResult TermPredicate::Evaluate(
     if (stemmed != term_) {
       if (TryAddWordKeyIteratorForPrefilter(text_index, stemmed, target_key,
                                             stem_field_mask, require_positions,
-                                            key_iterators)) {
+                                            key_iterators, postings)) {
         if (!require_positions) {
           return EvaluationResult(true);
         }
@@ -133,7 +141,7 @@ EvaluationResult TermPredicate::Evaluate(
     for (const auto &variant : stem_variants) {
       TryAddWordKeyIteratorForPrefilter(text_index, variant, target_key,
                                         stem_field_mask, require_positions,
-                                        key_iterators);
+                                        key_iterators, postings);
     }
   }
   if (key_iterators.empty()) {
@@ -141,7 +149,7 @@ EvaluationResult TermPredicate::Evaluate(
   }
   auto iterator = std::make_unique<indexes::text::TermIterator>(
       std::move(key_iterators), field_mask, require_positions, stem_field_mask,
-      found_original);
+      found_original, indexes::text::TermScoringParams{}, std::move(postings));
   return BuildTextEvaluationResult(std::move(iterator));
 }
 
@@ -165,19 +173,23 @@ EvaluationResult PrefixPredicate::Evaluate(
   absl::InlinedVector<indexes::text::Postings::KeyIterator,
                       indexes::text::kWordExpansionInlineCapacity>
       key_iterators;
+  absl::InlinedVector<indexes::text::InvasivePtr<indexes::text::Postings>,
+                      indexes::text::kWordExpansionInlineCapacity>
+      postings;
   // Limit the number of term word expansions
   uint32_t max_words = options::GetMaxTermExpansions().GetValue();
   uint32_t word_count = 0;
   while (!word_iter.Done() && word_count < max_words) {
     BACKGROUND_PAUSEPOINT("search_prefix_predicate");
     std::string_view word = word_iter.GetWord();
-    auto postings = word_iter.GetPostingsTarget();
-    if (postings) {
-      auto key_iter = postings->GetKeyIterator();
+    auto target = word_iter.GetPostingsTarget();
+    if (target) {
+      auto key_iter = target->GetKeyIterator();
       // Skip to target key and verify it contains the required fields
       if (key_iter.SkipForwardKey(target_key) &&
           key_iter.ContainsFields(field_mask)) {
         key_iterators.emplace_back(std::move(key_iter));
+        postings.push_back(std::move(target));
       }
     }
     word_iter.Next();
@@ -190,7 +202,9 @@ EvaluationResult PrefixPredicate::Evaluate(
     return EvaluationResult(true);
   }
   auto iterator = std::make_unique<indexes::text::TermIterator>(
-      std::move(key_iterators), field_mask, require_positions);
+      std::move(key_iterators), field_mask, require_positions,
+      /*stem_field_mask=*/0, /*has_original=*/false,
+      indexes::text::TermScoringParams{}, std::move(postings));
   return BuildTextEvaluationResult(std::move(iterator));
 }
 
@@ -219,6 +233,9 @@ EvaluationResult SuffixPredicate::Evaluate(
   absl::InlinedVector<indexes::text::Postings::KeyIterator,
                       indexes::text::kWordExpansionInlineCapacity>
       key_iterators;
+  absl::InlinedVector<indexes::text::InvasivePtr<indexes::text::Postings>,
+                      indexes::text::kWordExpansionInlineCapacity>
+      postings;
   // Limit the number of term word expansions
   uint32_t max_words = options::GetMaxTermExpansions().GetValue();
   uint32_t word_count = 0;
@@ -228,13 +245,14 @@ EvaluationResult SuffixPredicate::Evaluate(
     if (!word.starts_with(reversed_term)) {
       break;
     }
-    auto postings = word_iter.GetPostingsTarget();
-    if (postings) {
-      auto key_iter = postings->GetKeyIterator();
+    auto target = word_iter.GetPostingsTarget();
+    if (target) {
+      auto key_iter = target->GetKeyIterator();
       // Skip to target key and verify it contains the required fields
       if (key_iter.SkipForwardKey(target_key) &&
           key_iter.ContainsFields(field_mask)) {
         key_iterators.emplace_back(std::move(key_iter));
+        postings.push_back(std::move(target));
       }
     }
     word_iter.Next();
@@ -247,7 +265,9 @@ EvaluationResult SuffixPredicate::Evaluate(
     return EvaluationResult(true);
   }
   auto iterator = std::make_unique<indexes::text::TermIterator>(
-      std::move(key_iterators), field_mask, require_positions);
+      std::move(key_iterators), field_mask, require_positions,
+      /*stem_field_mask=*/0, /*has_original=*/false,
+      indexes::text::TermScoringParams{}, std::move(postings));
   return BuildTextEvaluationResult(std::move(iterator));
 }
 
@@ -315,11 +335,16 @@ EvaluationResult FuzzyPredicate::Evaluate(
   absl::InlinedVector<indexes::text::Postings::KeyIterator,
                       indexes::text::kWordExpansionInlineCapacity>
       filtered_key_iterators;
-  for (auto &key_iter : expansion.key_iterators) {
+  absl::InlinedVector<indexes::text::InvasivePtr<indexes::text::Postings>,
+                      indexes::text::kWordExpansionInlineCapacity>
+      filtered_postings;
+  for (size_t i = 0; i < expansion.key_iterators.size(); ++i) {
     BACKGROUND_PAUSEPOINT("search_fuzzy_search");
+    auto &key_iter = expansion.key_iterators[i];
     if (key_iter.SkipForwardKey(target_key) &&
         key_iter.ContainsFields(field_mask)) {
       filtered_key_iterators.emplace_back(std::move(key_iter));
+      filtered_postings.push_back(std::move(expansion.postings[i]));
     }
   }
   if (filtered_key_iterators.empty()) {
@@ -329,7 +354,9 @@ EvaluationResult FuzzyPredicate::Evaluate(
     return EvaluationResult(true);
   }
   auto iterator = std::make_unique<indexes::text::TermIterator>(
-      std::move(filtered_key_iterators), field_mask, require_positions);
+      std::move(filtered_key_iterators), field_mask, require_positions,
+      /*stem_field_mask=*/0, /*has_original=*/false,
+      indexes::text::TermScoringParams{}, std::move(filtered_postings));
   return BuildTextEvaluationResult(std::move(iterator));
 }
 

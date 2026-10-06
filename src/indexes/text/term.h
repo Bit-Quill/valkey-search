@@ -15,6 +15,7 @@
 #include "src/indexes/scoring/scorer.h"
 #include "src/indexes/text.h"
 #include "src/indexes/text/flat_position_map.h"
+#include "src/indexes/text/invasive_ptr.h"
 #include "src/indexes/text/text_iterator.h"
 #include "src/utils/inlined_priority_queue.h"
 
@@ -66,7 +67,9 @@ class TermIterator : public TextIterator {
           key_iterators,
       const FieldMaskPredicate query_field_mask, const bool require_positions,
       const FieldMaskPredicate stem_field_mask = 0, bool has_original = false,
-      const TermScoringParams& scoring = {});
+      const TermScoringParams& scoring = {},
+      absl::InlinedVector<InvasivePtr<Postings>, kWordExpansionInlineCapacity>
+          postings = {});
   /* Implementation of TextIterator APIs */
   FieldMaskPredicate QueryFieldMask() const override;
   // Key-level iteration
@@ -98,6 +101,9 @@ class TermIterator : public TextIterator {
  private:
   const FieldMaskPredicate query_field_mask_;
   const FieldMaskPredicate stem_field_mask_;
+  // Owns the Postings that key_iterators_ point into.
+  absl::InlinedVector<InvasivePtr<Postings>, kWordExpansionInlineCapacity>
+      postings_;
   absl::InlinedVector<Postings::KeyIterator, kWordExpansionInlineCapacity>
       key_iterators_;
   absl::InlinedVector<PositionIterator, kWordExpansionInlineCapacity>
