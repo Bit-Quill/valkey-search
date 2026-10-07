@@ -20,9 +20,12 @@ TermIterator::TermIterator(
         key_iterators,
     const FieldMaskPredicate query_field_mask, const bool require_positions,
     const FieldMaskPredicate stem_field_mask, bool has_original,
-    const TermScoringParams& scoring)
+    const TermScoringParams& scoring,
+    absl::InlinedVector<InvasivePtr<Postings>, kWordExpansionInlineCapacity>
+        postings)
     : query_field_mask_(query_field_mask),
       stem_field_mask_(stem_field_mask),
+      postings_(std::move(postings)),
       key_iterators_(std::move(key_iterators)),
       current_position_(std::nullopt),
       current_field_mask_(0ULL),

@@ -35,8 +35,7 @@ struct FuzzySearch {
     absl::InlinedVector<Postings::KeyIterator, kWordExpansionInlineCapacity>
         key_iterators;
     absl::InlinedVector<uint32_t, kWordExpansionInlineCapacity> per_term_dt;
-    // Used only by the extra-step scoring path, which does per-key LookupKey
-    // instead of forward iteration.
+    // Owners of the Postings that key_iterators point into.
     absl::InlinedVector<InvasivePtr<Postings>, kWordExpansionInlineCapacity>
         postings;
   };
