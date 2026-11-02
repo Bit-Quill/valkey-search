@@ -143,6 +143,31 @@ INSTANTIATE_TEST_SUITE_P(
             .query = "",
             .should_find = false,
         },
+        {
+            .test_name = "arrow_in_tag_braces",
+            .query = "@tag:{a=>[b]}",
+            .should_find = false,
+        },
+        {
+            .test_name = "arrow_after_escaped_tag_brace",
+            .query = "@tag:{a\\}=>[b]}",
+            .should_find = false,
+        },
+        {
+            .test_name = "arrow_in_quoted_phrase",
+            .query = "@title:\"foo =>[bar]\"",
+            .should_find = false,
+        },
+        {
+            .test_name = "arrow_after_escaped_quote",
+            .query = "@title:\"a\\\" =>[b]\"",
+            .should_find = false,
+        },
+        {
+            .test_name = "escaped_arrow",
+            .query = "foo\\=>[bar]",
+            .should_find = false,
+        },
     }),
     [](const TestParamInfo<FindVectorDelimiterTestCase> &info) {
       return info.param.test_name;
@@ -183,6 +208,12 @@ TEST(FindVectorDelimiterSplitTest, MultipleQMABlocksInPreFilter) {
     search_pos += 2;
   }
   EXPECT_EQ(arrow_count, 2u);
+}
+
+TEST(FindVectorDelimiterSplitTest, SkipsLiteralArrows) {
+  std::string query =
+      "@tag:{a=>[b]} @title:\"c=>[d]\" e\\=>[f] =>[KNN 10 @vec $BLOB]";
+  EXPECT_EQ(query::FindVectorDelimiter(query), query.rfind("=>"));
 }
 
 }  // namespace
