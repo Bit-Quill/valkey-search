@@ -2046,21 +2046,46 @@ absl::Status ParseKNN(query::SearchParameters &parameters,
 //
 // Scans for the vector filter delimiter `=>` that is followed by `[` (after
 // optional whitespace). This distinguishes the vector KNN delimiter from QMA
-// blocks which use `=> {`.
+// blocks which use `=> {`. Escaped characters, quoted phrases and braces are
+// skipped.
 //
 size_t FindVectorDelimiter(absl::string_view expr) {
-  size_t pos = 0;
-  while ((pos = expr.find(kVectorFilterDelimiter, pos)) !=
-         absl::string_view::npos) {
-    // Skip whitespace after =>
-    size_t after = pos + kVectorFilterDelimiter.size();
-    while (after < expr.size() && std::isspace(expr[after])) {
-      after++;
+  // Mirrors FilterParser::ParseTextTokens: an unmatched `'` is not a phrase.
+  auto has_matching_apostrophe_ahead = [expr](size_t start) {
+    for (size_t i = start; i < expr.size(); ++i) {
+      if (expr[i] == '\\') {
+        ++i;
+      } else if (expr[i] == '\'') {
+        return true;
+      }
     }
-    if (after < expr.size() && expr[after] == '[') {
-      return pos;  // This is the vector delimiter
+    return false;
+  };
+  char close = 0;
+  for (size_t pos = 0; pos < expr.size(); ++pos) {
+    char c = expr[pos];
+    if (c == '\\') {
+      ++pos;
+    } else if (close != 0) {
+      if (c == close) close = 0;
+    } else if (c == '"') {
+      close = '"';
+    } else if (c == '\'' && options::EnabledInVersion(1, 3, 0) &&
+               has_matching_apostrophe_ahead(pos + 1)) {
+      close = '\'';
+    } else if (c == '{') {
+      close = '}';
+    } else if (absl::StartsWith(expr.substr(pos), kVectorFilterDelimiter)) {
+      // Skip whitespace after =>
+      size_t after = pos + kVectorFilterDelimiter.size();
+      while (after < expr.size() && absl::ascii_isspace(expr[after])) {
+        after++;
+      }
+      if (after < expr.size() && expr[after] == '[') {
+        return pos;  // This is the vector delimiter
+      }
+      ++pos;
     }
-    pos += kVectorFilterDelimiter.size();  // Continue searching
   }
   return absl::string_view::npos;  // No vector delimiter found
 }
