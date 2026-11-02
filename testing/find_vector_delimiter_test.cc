@@ -11,6 +11,9 @@
 #include "absl/strings/string_view.h"
 #include "gtest/gtest.h"
 #include "src/query/search.h"
+#include "src/valkey_search_options.h"
+#include "src/version.h"
+#include "vmsdk/src/testing_infra/utils.h"
 
 namespace valkey_search {
 namespace {
@@ -214,6 +217,18 @@ TEST(FindVectorDelimiterSplitTest, SkipsLiteralArrows) {
   std::string query =
       "@tag:{a=>[b]} @title:\"c=>[d]\" e\\=>[f] =>[KNN 10 @vec $BLOB]";
   EXPECT_EQ(query::FindVectorDelimiter(query), query.rfind("=>"));
+}
+
+TEST(FindVectorDelimiterSplitTest, ApostrophePhraseGated) {
+  auto saved = options::GetEmulateRelease().GetValue();
+  std::string query = "@title:'c=>[d]' =>[KNN 10 @vec $BLOB]";
+  std::string unmatched = "don't it\\'s =>[KNN 10 @vec $BLOB]";
+  VMSDK_EXPECT_OK(options::GetEmulateRelease().SetValue(kRelease13));
+  EXPECT_EQ(query::FindVectorDelimiter(query), query.rfind("=>"));
+  EXPECT_EQ(query::FindVectorDelimiter(unmatched), unmatched.find("=>"));
+  VMSDK_EXPECT_OK(options::GetEmulateRelease().SetValue(kRelease12));
+  EXPECT_EQ(query::FindVectorDelimiter(query), query.find("=>"));
+  VMSDK_EXPECT_OK(options::GetEmulateRelease().SetValue(saved));
 }
 
 }  // namespace

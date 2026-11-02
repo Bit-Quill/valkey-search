@@ -2050,6 +2050,17 @@ absl::Status ParseKNN(query::SearchParameters &parameters,
 // skipped.
 //
 size_t FindVectorDelimiter(absl::string_view expr) {
+  // Mirrors FilterParser::ParseTextTokens: an unmatched `'` is not a phrase.
+  auto has_matching_apostrophe_ahead = [expr](size_t start) {
+    for (size_t i = start; i < expr.size(); ++i) {
+      if (expr[i] == '\\') {
+        ++i;
+      } else if (expr[i] == '\'') {
+        return true;
+      }
+    }
+    return false;
+  };
   char close = 0;
   for (size_t pos = 0; pos < expr.size(); ++pos) {
     char c = expr[pos];
@@ -2059,6 +2070,9 @@ size_t FindVectorDelimiter(absl::string_view expr) {
       if (c == close) close = 0;
     } else if (c == '"') {
       close = '"';
+    } else if (c == '\'' && options::EnabledInVersion(1, 3, 0) &&
+               has_matching_apostrophe_ahead(pos + 1)) {
+      close = '\'';
     } else if (c == '{') {
       close = '}';
     } else if (absl::StartsWith(expr.substr(pos), kVectorFilterDelimiter)) {

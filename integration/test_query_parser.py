@@ -419,3 +419,17 @@ class TestQueryParser(ValkeySearchTestCaseBase):
             "FT.SEARCH", "arrow_idx", "@tag:{a=>[b]} =>[KNN 2 @vec $BLOB]",
             "PARAMS", 2, "BLOB", vec, "NOCONTENT",
         ) == [1, b"arrow:1"]
+
+    def test_literal_arrow_in_apostrophe_phrase(self):
+        client: Valkey = self.server.get_new_client()
+        assert client.execute_command(
+            "CONFIG", "SET", "search.emulate-release", "1.3.0") == b"OK"
+        assert client.execute_command(
+            "FT.CREATE", "apos_idx", "ON", "HASH", "PREFIX", "1", "apos:",
+            "SCHEMA", "title", "TEXT",
+        ) == b"OK"
+        client.execute_command("HSET", "apos:1", "title", "foo bar")
+        client.execute_command("HSET", "apos:2", "title", "baz")
+        assert client.execute_command(
+            "FT.SEARCH", "apos_idx", "@title:'foo =>[bar]'", "NOCONTENT"
+        ) == [1, b"apos:1"]
