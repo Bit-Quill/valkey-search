@@ -79,6 +79,12 @@ Some metrics are reported only when they apply. The `coordinator_*` metrics appe
 | `vector_registry_shared_externally_cnt`                          | `vector_registry`  |    Count     | Count of vectors successfully shared with the engine's hash field, so only one copy is kept in memory                                                               |
 | `vector_registry_shared_externally_errors`                       | `vector_registry`  |    Count     | Count of failed attempts to share a vector with the engine's hash field                                                                                             |
 | `vector_registry_sharing_active`                                 | `vector_registry`  |   Boolean    | 1 if vector memory sharing with the engine is enabled, otherwise 0                                                                                                  |
+| `vector_externing_deferred_entry_cnt`                            | `vector_externing` |    Count     | Deprecated, always 0. Use the `vector_registry_*` fields instead                                                                                                    |
+| `vector_externing_entry_count`                                   | `vector_externing` |    Count     | Deprecated, always 0. Use the `vector_registry_*` fields instead                                                                                                    |
+| `vector_externing_generated_value_cnt`                           | `vector_externing` |    Count     | Deprecated, always 0. Use the `vector_registry_*` fields instead                                                                                                    |
+| `vector_externing_hash_extern_errors`                            | `vector_externing` |    Count     | Deprecated, always 0. Use the `vector_registry_*` fields instead                                                                                                    |
+| `vector_externing_lru_promote_cnt`                               | `vector_externing` |    Count     | Deprecated, always 0. Use the `vector_registry_*` fields instead                                                                                                    |
+| `vector_externing_num_lru_entries`                               | `vector_externing` |    Count     | Deprecated, always 0. Use the `vector_registry_*` fields instead                                                                                                    |
 
 ## Compatibility counters
 

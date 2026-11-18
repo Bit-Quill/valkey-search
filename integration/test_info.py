@@ -87,6 +87,22 @@ class TestVSSBasic(ValkeySearchTestCaseBase):
             assert (isinstance(bytes_value, str) and bytes_value.endswith("iB")) or  \
                    (((os.environ.get('SAN_BUILD'), 'no') != 'no') and bytes_value == 0)
 
+    def test_deprecated_vector_externing_fields_report_zero(self):
+        # Removed in 1.3.0 with the VectorRegistry; kept for compatibility
+        # with 1.2.x INFO consumers. They always report 0.
+        client: Valkey = self.server.get_new_client()
+        info_data = client.info("SEARCH")
+        for field in [
+            "search_vector_externing_entry_count",
+            "search_vector_externing_hash_extern_errors",
+            "search_vector_externing_generated_value_cnt",
+            "search_vector_externing_num_lru_entries",
+            "search_vector_externing_lru_promote_cnt",
+            "search_vector_externing_deferred_entry_cnt",
+        ]:
+            assert field in info_data, f"{field} missing from INFO SEARCH"
+            assert int(info_data[field]) == 0
+
 
 class TestAppMetrics(ValkeySearchTestCaseDebugMode):
     """
@@ -173,6 +189,13 @@ class TestAppMetrics(ValkeySearchTestCaseDebugMode):
             "vector_registry_shared_externally_cnt",
             "vector_registry_shared_externally_errors",
             "vector_registry_sharing_active",
+            # Deprecated in 1.3.0, always 0. Kept for 1.2.x compatibility.
+            "vector_externing_deferred_entry_cnt",
+            "vector_externing_entry_count",
+            "vector_externing_generated_value_cnt",
+            "vector_externing_hash_extern_errors",
+            "vector_externing_lru_promote_cnt",
+            "vector_externing_num_lru_entries",
         }
         # Verify no metrics are missing
         missing = expected_metrics - actual_metrics_set
