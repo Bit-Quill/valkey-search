@@ -819,6 +819,11 @@ TEST_F(TermIteratorLifetimeTest, OwnsPostingsAfterIndexReleased) {
          return query::FuzzyPredicate(schema, ~0ULL, "hallo", 1)
              .BuildTextIterator(schema->GetTextIndex(), ~0ULL, false, 1.0f);
        }},
+      {"stem",
+       [](const auto &schema) {
+         return query::TermPredicate(schema, ~0ULL, "runs", /*exact=*/false)
+             .BuildTextIterator(schema->GetTextIndex(), ~0ULL, false, 1.0f);
+       }},
   };
   for (const auto &[name, build] : cases) {
     SCOPED_TRACE(name);
@@ -827,13 +832,13 @@ TEST_F(TermIteratorLifetimeTest, OwnsPostingsAfterIndexReleased) {
         " ", std::vector<std::string>{}, /*with_offsets=*/false,
         /*min_stem_size=*/4);
     data_model::TextIndex proto;
-    proto.set_no_stem(true);
     proto.set_with_suffix_trie(true);
     auto text = std::make_unique<Text>(proto, schema);
+    schema->SetStemTextFieldMask(1ULL << text->GetTextFieldNumber());
     auto key = StringInternStore::Intern("d1");
     ASSERT_TRUE(
-        text->AddRecord(key,
-                        AttributeData(vmsdk::MakeUniqueValkeyString("hello")))
+        text->AddRecord(key, AttributeData(vmsdk::MakeUniqueValkeyString(
+                                 "hello running")))
             .ok());
     schema->CommitKeyData(key);
 

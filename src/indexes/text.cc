@@ -292,7 +292,6 @@ ExpansionPredicate::BuildTextIterator(
       std::move(postings));
 }
 
-
 /*
  * Size APIs for pre-filter or inline filter planning.
  *

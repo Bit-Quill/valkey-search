@@ -177,15 +177,13 @@ class TermIterator : public TextIterator {
   using KeyIterators =
       absl::InlinedVector<Postings::KeyIterator, kWordExpansionInlineCapacity>;
 
-  TermIterator(KeyIterators&& key_iterators,
-               const FieldMaskPredicate query_field_mask,
-               const bool require_positions,
-               const FieldMaskPredicate stem_field_mask = 0,
-               bool has_original = false,
-               const TermScoringParams& scoring = {},
-               absl::InlinedVector<InvasivePtr<Postings>,
-                                   kWordExpansionInlineCapacity>
-                   postings = {});
+  TermIterator(
+      KeyIterators&& key_iterators, const FieldMaskPredicate query_field_mask,
+      const bool require_positions,
+      const FieldMaskPredicate stem_field_mask = 0, bool has_original = false,
+      const TermScoringParams& scoring = {},
+      absl::InlinedVector<InvasivePtr<Postings>, kWordExpansionInlineCapacity>
+          postings = {});
   /* Implementation of TextIterator APIs */
   FieldMaskPredicate QueryFieldMask() const override;
   // Key-level iteration
