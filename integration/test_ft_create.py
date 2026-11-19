@@ -177,3 +177,73 @@ class TestSearchFTCreateCMD(ValkeySearchTestCaseBase):
                 "sku", "TAG", "UNF",
             )
         assert "UNF" in str(e.value)
+
+
+    def test_json_identifier_without_dollar_rejected(self):
+        """Regression test for issue #737.
+
+        A JSON attribute identifier must be a JSONPath starting with `$`.
+        Other identifiers, including valkey-json legacy paths, don't index
+        the value, so FT.CREATE must reject them for every field type.
+        """
+        client = self.server.get_new_client()
+        field_types = [
+            ["TAG"], ["NUMERIC"], ["TEXT"],
+            ["VECTOR", "FLAT", "6", "TYPE", "FLOAT32", "DIM", "2",
+             "DISTANCE_METRIC", "L2"],
+        ]
+        for identifier in ["y", ".y", "nested.y"]:
+            for field_type in field_types:
+                with pytest.raises(valkey.exceptions.ResponseError) as e:
+                    client.execute_command(
+                        "FT.CREATE", "idxjson", "ON", "JSON",
+                        "SCHEMA", identifier, "AS", "f", *field_type,
+                    )
+                assert "must start with `$`" in str(e.value), (
+                    identifier, field_type)
+        # The exact command from the issue, with no AS clause.
+        with pytest.raises(valkey.exceptions.ResponseError) as e:
+            client.execute_command(
+                "FT.CREATE", "x", "ON", "JSON", "SCHEMA", "y", "TAG",
+            )
+        assert "must start with `$`" in str(e.value)
+        # A `$` path still needs AS: the path is not a valid field name.
+        with pytest.raises(valkey.exceptions.ResponseError) as e:
+            client.execute_command(
+                "FT.CREATE", "x", "ON", "JSON", "SCHEMA", "$.y", "TAG",
+            )
+        assert "contains invalid character" in str(e.value)
+        assert client.execute_command("FT._LIST") == []
+
+
+class TestFTCreateJsonAof(ValkeySearchTestCaseBase):
+    """FT.CREATE rejection of non-`$` JSON paths must not break AOF replay."""
+
+    def append_startup_args(self, args):
+        args = super().append_startup_args(args)
+        args["appendonly"] = "yes"
+        args["appendfsync"] = "always"
+        return args
+
+    def test_aof_replay_restores_json_index_without_dollar(self):
+        """An AOF written before issue #737's check still restores the index.
+
+        The FT.CREATE is appended to the AOF directly, as an older version
+        would have logged it. On restart, replay must not reject it.
+        """
+        client = self.server.get_new_client()
+        aof_dir = os.path.join(client.config_get("dir")["dir"],
+                               client.config_get("appenddirname")["appenddirname"])
+        manifest = next(f for f in os.listdir(aof_dir)
+                        if f.endswith(".manifest"))
+        with open(os.path.join(aof_dir, manifest)) as f:
+            incr = [line.split()[1] for line in f if "type i" in line][-1]
+        cmd = ["FT.CREATE", "x", "ON", "JSON", "SCHEMA", "y", "TAG"]
+        resp = f"*{len(cmd)}\r\n" + "".join(
+            f"${len(a)}\r\n{a}\r\n" for a in cmd)
+        with open(os.path.join(aof_dir, incr), "a") as f:
+            f.write(resp)
+
+        self.server.restart(remove_rdb=False)
+        client = self.server.get_new_client()
+        assert client.execute_command("FT._LIST") == [b"x"]
