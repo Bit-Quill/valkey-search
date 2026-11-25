@@ -207,22 +207,16 @@ InvasivePtr<StemParents> Rax::WordIterator::GetStemParentsTarget() const {
 
 namespace {
 
-// Helper to compute padding for rax node
-inline size_t RaxPadding(size_t nodesize) {
-  return (sizeof(void *) - ((nodesize + 4) % sizeof(void *))) &
-         (sizeof(void *) - 1);
-}
-
 // Helper to get pointer to first child in a rax node
 inline raxNode **RaxNodeFirstChildPtr(raxNode *n) {
-  return reinterpret_cast<raxNode **>(n->data + n->size + RaxPadding(n->size));
+  return reinterpret_cast<raxNode **>(n->data + n->size + raxPadding(n->size));
 }
 
 // Helper to get data stored in a rax node
 inline void *RaxNodeGetData(raxNode *n) {
   if (!n->iskey || n->isnull) return nullptr;
   size_t node_len =
-      sizeof(raxNode) + n->size + RaxPadding(n->size) +
+      sizeof(raxNode) + n->size + raxPadding(n->size) +
       (n->iscompr ? sizeof(raxNode *) : sizeof(raxNode *) * n->size) +
       sizeof(void *);
   return *reinterpret_cast<void **>(reinterpret_cast<char *>(n) + node_len -
@@ -273,7 +267,7 @@ Rax::PathIterator::PathIterator(rax *rax, absl::string_view prefix)
       i += h->size;
       // Descend to child
       h = *reinterpret_cast<raxNode **>(h->data + h->size +
-                                        RaxPadding(h->size));
+                                        raxPadding(h->size));
     } else {
       // Branching node: find child with matching byte
       unsigned char c = static_cast<unsigned char>(prefix[i]);
@@ -380,7 +374,7 @@ Rax::PathIterator Rax::PathIterator::DescendNew() const {
     std::string new_path = path_;
     new_path.append(reinterpret_cast<const char *>(node_->data), node_->size);
     raxNode *child = *reinterpret_cast<raxNode **>(node_->data + node_->size +
-                                                   RaxPadding(node_->size));
+                                                   raxPadding(node_->size));
     return PathIterator(rax_, child, std::move(new_path));
   }
 

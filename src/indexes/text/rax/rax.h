@@ -197,6 +197,12 @@ typedef struct raxNode {
     unsigned char data[];
 } raxNode;
 
+/* Return the padding needed in the characters section of a node having size
+ * 'nodesize'. The padding is needed to store the child pointers to aligned
+ * addresses. */
+#define raxPadding(nodesize) \
+    ((sizeof(void *) - (((nodesize) + offsetof(raxNode, data)) % sizeof(void *))) & (sizeof(void *) - 1))
+
 typedef struct rax {
     raxNode *head;     /* Pointer to root node of tree */
     uint64_t numele;   /* Number of keys in the tree */
