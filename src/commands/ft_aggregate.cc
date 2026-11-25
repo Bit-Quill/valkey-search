@@ -5,6 +5,7 @@
  */
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,6 +14,8 @@
 #include "absl/log/check.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
+#include "absl/strings/numbers.h"
 #include "ft_search_parser.h"
 #include "src/commands/commands.h"
 #include "src/commands/ft_aggregate_exec.h"
@@ -108,6 +111,35 @@ bool LoadAllFetchChangesReply(const AggregateParameters &params) {
     }
   }
   return false;
+}
+
+// Stages resolve `@name` before PARAMS is read, so a `$name` KNN alias is
+// looked up first.
+std::optional<absl::string_view> FindParam(vmsdk::ArgsIterator itr,
+                                           absl::string_view name) {
+  std::optional<absl::string_view> value;
+  for (; itr.HasNext(); itr.Next()) {
+    if (!absl::EqualsIgnoreCase(*itr.GetStringView(), "PARAMS")) {
+      continue;
+    }
+    auto args = itr;
+    uint32_t cnt;
+    if (!args.Next().HasNext() ||
+        !absl::SimpleAtoi(*args.GetStringView(), &cnt) || cnt % 2 != 0 ||
+        args.DistanceEnd() <= cnt) {
+      continue;
+    }
+    for (uint32_t i = 0; i < cnt; i += 2) {
+      auto key = *args.Next().GetStringView();
+      if (key == name) {
+        value = *args.Next().GetStringView();
+      } else {
+        args.Next();
+      }
+    }
+    itr = args;
+  }
+  return value;
 }
 
 }  // namespace
@@ -266,6 +298,12 @@ absl::Status AggregateParameters::ParseCommand(vmsdk::ArgsIterator &itr) {
   parse_vars_.index_interface_ = &real_index_interface;
 
   VMSDK_RETURN_IF_ERROR(PreParseQueryString());
+  if (absl::StartsWith(parse_vars.score_as_string, "$")) {
+    if (auto value = FindParam(
+            itr, absl::string_view(parse_vars.score_as_string).substr(1))) {
+      score_as = vmsdk::MakeUniqueValkeyString(*value);
+    }
+  }
   // Resolve the single VR predicate's distance field name (if any).
   if (has_vector_range) {
     vr_score_field_name_ = query::GetVrScoreFieldName(*this);

@@ -1,6 +1,8 @@
 import struct
 
+import pytest
 from valkey.client import Valkey
+from valkey.exceptions import ResponseError
 from valkey_search_test_case import ValkeySearchTestCaseBase
 from valkeytestframework.conftest import resource_port_tracker
 
@@ -93,3 +95,59 @@ class TestAggregateHybridDistance(ValkeySearchTestCaseBase):
             "DIALECT", "2",
         )
         assert self._distances_by_key(hybrid) == expected
+
+    def test_param_alias_names_the_distance_column(self):
+        """`AS $alias` names the column every stage reads, wherever PARAMS is."""
+        client: Valkey = self.server.get_new_client()
+        self._populate(client)
+        expected = {key: distance for key, _t, _x, distance in self.DOCS}
+
+        def aggregate(*stages, params_first=False, params=("alias", "mydist"),
+                      query="*=>[KNN 4 @vec $q AS $alias]"):
+            params = ["PARAMS", str(2 + len(params)), "q", self.QUERY_VECTOR,
+                      *params]
+            return client.execute_command(
+                "FT.AGGREGATE", "idx", query,
+                *(params if params_first else []), *stages,
+                *([] if params_first else params), "DIALECT", "2",
+            )
+
+        def rows(reply):
+            return [dict(zip(row[::2], row[1::2])) for row in reply[1:]]
+
+        for params_first in (False, True):
+            run = lambda *stages: aggregate(*stages, params_first=params_first)
+            assert self._distances_by_key(run("LOAD", "1", "@__key")) == expected
+            assert self._distances_by_key(
+                run("LOAD", "2", "@__key", "@mydist")) == expected
+            filtered = run("LOAD", "1", "@__key", "FILTER", "@mydist < 2")
+            assert self._distances_by_key(filtered) == {"doc:1": 0.0,
+                                                        "doc:2": 1.0}
+            # A real field read before the alias still resolves to the field.
+            mixed = run("APPLY", "upper(@title)", "AS", "t",
+                        "FILTER", "@mydist > 2", "LOAD", "1", "@__key")
+            assert self._distances_by_key(mixed) == {"doc:3": 4.0,
+                                                     "doc:4": 9.0}
+            ordered = run("SORTBY", "2", "@mydist", "DESC")
+            assert [float(r[b"mydist"]) for r in rows(ordered)] == [
+                9.0, 4.0, 1.0, 0.0]
+            doubled = run("APPLY", "@mydist * 2", "AS", "dbl")
+            assert sorted(float(r[b"dbl"]) for r in rows(doubled)) == [
+                0.0, 2.0, 8.0, 18.0]
+            grouped = run("GROUPBY", "1", "@mydist",
+                          "REDUCE", "COUNT", "0", "AS", "c")
+            assert sorted(float(r[b"mydist"]) for r in rows(grouped)) == [
+                0.0, 1.0, 4.0, 9.0]
+            with pytest.raises(ResponseError, match="`nosuch` does not exist"):
+                run("FILTER", "@nosuch < 2")
+
+        # PARAMS as text inside the query, inside an expression and as an
+        # APPLY name is not the PARAMS clause.
+        reply = aggregate(
+            "APPLY", "'PARAMS 2 alias wrong'", "AS", "PARAMS",
+            "FILTER", "@mydist < 2", "LOAD", "1", "@__key",
+            query="(-@title:PARAMS)=>[KNN 4 @vec $q AS $alias]")
+        assert self._distances_by_key(reply) == {"doc:1": 0.0, "doc:2": 1.0}
+
+        with pytest.raises(ResponseError, match="Parameter alias not found"):
+            aggregate("LOAD", "1", "@__key", params=())
