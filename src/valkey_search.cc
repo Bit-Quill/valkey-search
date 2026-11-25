@@ -440,6 +440,45 @@ static vmsdk::info_field::Integer vector_registry_chunk_count(
       return FixedSizeAllocator::GlobalChunkCount();
     }));
 
+// Deprecated: the vector externalizer was replaced by the VectorRegistry in
+// 1.3.0 (see the vector_registry_* fields). These fields are kept, always
+// reporting 0, so INFO consumers written against 1.2.x keep working.
+static vmsdk::info_field::Integer vector_externing_entry_count(
+    "vector_externing", "vector_externing_entry_count",
+    vmsdk::info_field::IntegerBuilder().App().Computed([]() -> long long {
+      return 0;
+    }));
+
+static vmsdk::info_field::Integer vector_externing_hash_extern_errors(
+    "vector_externing", "vector_externing_hash_extern_errors",
+    vmsdk::info_field::IntegerBuilder().App().Computed([]() -> long long {
+      return 0;
+    }));
+
+static vmsdk::info_field::Integer vector_externing_generated_value_cnt(
+    "vector_externing", "vector_externing_generated_value_cnt",
+    vmsdk::info_field::IntegerBuilder().App().Computed([]() -> long long {
+      return 0;
+    }));
+
+static vmsdk::info_field::Integer vector_externing_num_lru_entries(
+    "vector_externing", "vector_externing_num_lru_entries",
+    vmsdk::info_field::IntegerBuilder().App().Computed([]() -> long long {
+      return 0;
+    }));
+
+static vmsdk::info_field::Integer vector_externing_lru_promote_cnt(
+    "vector_externing", "vector_externing_lru_promote_cnt",
+    vmsdk::info_field::IntegerBuilder().App().Computed([]() -> long long {
+      return 0;
+    }));
+
+static vmsdk::info_field::Integer vector_externing_deferred_entry_cnt(
+    "vector_externing", "vector_externing_deferred_entry_cnt",
+    vmsdk::info_field::IntegerBuilder().App().Computed([]() -> long long {
+      return 0;
+    }));
+
 static vmsdk::info_field::Integer ft_internal_update_process_failures_cnt(
     "coordinator", "ft_internal_update_process_failures_cnt",
     vmsdk::info_field::IntegerBuilder().Dev().Computed([]() -> long long {
