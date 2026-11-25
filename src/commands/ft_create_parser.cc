@@ -852,6 +852,19 @@ absl::StatusOr<data_model::IndexSchema> ParseFTCreateArgs(
   while (itr.HasNext()) {
     absl::string_view attribute_identifier;
     VMSDK_RETURN_IF_ERROR(vmsdk::ParseParamValue(itr, attribute_identifier));
+    // JSON attributes are read through a JSONPath (`$...`). Other identifiers,
+    // including legacy JSON paths, are unsupported: their values are almost
+    // always discarded, leaving the attribute empty.
+    // AOF replay and replicated commands skip the check, so an index created
+    // before it was added is still restored rather than dropped.
+    if (on_data_type ==
+            data_model::AttributeDataType::ATTRIBUTE_DATA_TYPE_JSON &&
+        !absl::StartsWith(attribute_identifier, "$") &&
+        vmsdk::IsRealUserClient(ctx)) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Invalid JSON path `", attribute_identifier,
+                       "`: a JSON attribute path must start with `$`"));
+    }
     VMSDK_ASSIGN_OR_RETURN(
         auto attribute,
         ParseAttributeArgs(itr, attribute_identifier, index_schema_proto,

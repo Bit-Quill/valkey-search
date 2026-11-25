@@ -5,7 +5,7 @@ locate a value of the declared type. Some field type definitions have additional
 For indexes on `HASH` keys, the default path is the same as the hash member name. The optional `AS` clause can be used to rename
 the field if desired.
 
-For indexes on `JSON` keys, the path is a `JSON` path to the data of the declared type. The `AS` clause is required in order to provide a field name without the special characters of a `JSON` path.
+For indexes on `JSON` keys, the path is a `JSON` path to the data of the declared type. The path must start with `$`; any other path, including a legacy path such as `.price`, is rejected. The `AS` clause is required in order to provide a field name without the special characters of a `JSON` path.
 
 The same source field may be indexed more than once, for example as both `TEXT` and `TAG`, as long as each entry has a distinct `AS` alias. Aliases must be unique within an index. An alias, or the field identifier when `AS` is omitted, may not contain any of the characters `,.<>{}[]"':;!@#$%^&*()-+=~/\|?` (`_` is allowed).
 
