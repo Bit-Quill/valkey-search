@@ -141,6 +141,17 @@ void RegisterRDBCallback(data_model::RDBSectionType type,
 }
 void ClearRDBCallbacks() { kRegisteredRDBSectionCallbacks.clear(); }
 
+absl::Status SkipSupplementalContent(SupplementalContentIter &&supp_it) {
+  while (supp_it.HasNext()) {
+    VMSDK_ASSIGN_OR_RETURN(auto _, supp_it.Next());
+    auto chunk_it = supp_it.IterateChunks();
+    while (chunk_it.HasNext()) {
+      VMSDK_ASSIGN_OR_RETURN(auto _, chunk_it.Next());
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status PerformRDBLoad(ValkeyModuleCtx *ctx, SafeRDB *rdb, int encver) {
   // Parse the header
   if (encver != kCurrentEncVer) {
@@ -194,15 +205,8 @@ absl::Status PerformRDBLoad(ValkeyModuleCtx *ctx, SafeRDB *rdb, int encver) {
       VMSDK_LOG(WARNING, ctx)
           << "Ignoring unknown RDB section with type "
           << data_model::RDBSectionType_Name(section->type());
-      // Need to consume all supplemental data
-      auto supp_it = it.IterateSupplementalContent();
-      while (supp_it.HasNext()) {
-        VMSDK_ASSIGN_OR_RETURN(auto _, supp_it.Next());
-        auto chunk_it = supp_it.IterateChunks();
-        while (chunk_it.HasNext()) {
-          VMSDK_ASSIGN_OR_RETURN(auto _, chunk_it.Next());
-        }
-      }
+      VMSDK_RETURN_IF_ERROR(
+          SkipSupplementalContent(it.IterateSupplementalContent()));
     }
   }
 

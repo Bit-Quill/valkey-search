@@ -111,15 +111,19 @@ absl::Status FTDropIndexCmd(ValkeyModuleCtx *ctx, ValkeyModuleString **argv,
   }
   auto index_schema_name = vmsdk::ToStringView(argv[1]);
 
-  VMSDK_ASSIGN_OR_RETURN(
-      auto index_schema,
-      SchemaManager::Instance().GetIndexSchema(ValkeyModule_GetSelectedDb(ctx),
-                                               index_schema_name));
-  VMSDK_RETURN_IF_ERROR(AclPrefixCheck(ctx, acl::KeyAccess::kWrite,
-                                       index_schema->GetKeyPrefixes()));
+  auto index_schema = SchemaManager::Instance().GetIndexSchema(
+      ValkeyModule_GetSelectedDb(ctx), index_schema_name);
+  // AOF replay and replicated FT.DROPINDEX of an index this node skipped go
+  // on to reply OK and replicate, like the skipped FT.CREATE.
+  if (vmsdk::IsRealUserClient(ctx) ||
+      !absl::IsNotFound(index_schema.status())) {
+    VMSDK_RETURN_IF_ERROR(index_schema.status());
+    VMSDK_RETURN_IF_ERROR(AclPrefixCheck(ctx, acl::KeyAccess::kWrite,
+                                         (*index_schema)->GetKeyPrefixes()));
 
-  VMSDK_RETURN_IF_ERROR(SchemaManager::Instance().RemoveIndexSchema(
-      ValkeyModule_GetSelectedDb(ctx), index_schema_name));
+    VMSDK_RETURN_IF_ERROR(SchemaManager::Instance().RemoveIndexSchema(
+        ValkeyModule_GetSelectedDb(ctx), index_schema_name));
+  }
 
   // directly handle reply in standalone mode
   // let fanout operation handle reply in cluster mode

@@ -374,6 +374,7 @@ class RDBChunkOutputStream : public hnswlib::OutputStream {
 void RegisterRDBCallback(data_model::RDBSectionType type,
                          RDBSectionCallbacks callbacks);
 void ClearRDBCallbacks();
+absl::Status SkipSupplementalContent(SupplementalContentIter &&supp_it);
 absl::Status PerformRDBLoad(ValkeyModuleCtx *ctx, SafeRDB *rdb, int encver);
 int AuxLoadCallback(ValkeyModuleIO *rdb, int encver, int when);
 absl::Status PerformRDBSave(ValkeyModuleCtx *ctx, SafeRDB *rdb, int when);

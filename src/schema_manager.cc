@@ -45,6 +45,7 @@
 #include "vmsdk/src/module_config.h"
 #include "vmsdk/src/status/status_macros.h"
 #include "vmsdk/src/thread_pool.h"
+#include "vmsdk/src/utils.h"
 #include "vmsdk/src/valkey_module_api/valkey_module.h"
 
 namespace valkey_search {
@@ -52,6 +53,10 @@ namespace valkey_search {
 constexpr absl::string_view kMaxIndexesConfig{"max-indexes"};
 constexpr uint32_t kMaxIndexes{10000000};
 constexpr uint32_t kMaxIndexesDefault{1000};
+
+constexpr absl::string_view kMaxIndexNameLenConfig{"max-index-name-length"};
+constexpr uint32_t kMaxIndexNameLen{1 << 20};
+constexpr uint32_t kMaxIndexNameLenDefault{1024};
 
 constexpr absl::string_view kIndexSchemaBackfillBatchSizeConfig(
     "backfill-batch-size");
@@ -71,6 +76,21 @@ static auto max_indexes =
 
 vmsdk::config::Number &GetMaxIndexes() {
   return dynamic_cast<vmsdk::config::Number &>(*max_indexes);
+}
+
+/// Register the "--max-index-name-length" flag. Controls the max length of an
+/// index name.
+static auto max_index_name_len =
+    vmsdk::config::NumberBuilder(kMaxIndexNameLenConfig,   // name
+                                 kMaxIndexNameLenDefault,  // default size
+                                 1,                        // min size
+                                 kMaxIndexNameLen)         // max size
+        .WithValidationCallback(
+            CHECK_RANGE(1, kMaxIndexNameLen, kMaxIndexNameLenConfig))
+        .Build();
+
+vmsdk::config::Number &GetMaxIndexNameLen() {
+  return dynamic_cast<vmsdk::config::Number &>(*max_index_name_len);
 }
 
 /// Register the "--backfill-batch-size" flag. Controls the max number of
@@ -192,6 +212,23 @@ absl::Status SchemaManager::ImportIndexSchema(
 }
 
 namespace {
+
+// Logs and returns true when a loaded or received index has a name over the
+// limit, so the caller skips that index and goes on with the rest.
+bool SkipOverlongIndexName(ValkeyModuleCtx *ctx, uint32_t db_num,
+                           absl::string_view name) {
+  const auto limit = options::GetMaxIndexNameLen().GetValue();
+  if (name.size() <= static_cast<size_t>(limit)) {
+    return false;
+  }
+  VMSDK_LOG(WARNING, ctx) << "Skipping index in db " << db_num
+                          << " whose name starts with "
+                          << vmsdk::config::RedactIfNeeded(name.substr(0, 64))
+                          << ": name length " << name.size()
+                          << " is above search.max-index-name-length (" << limit
+                          << ")";
+  return true;
+}
 
 // Two prefix lists can match a common key iff some prefix of one is a prefix
 // of the other. The empty prefix matches every key, so a list containing it
@@ -354,6 +391,17 @@ absl::Status SchemaManager::CreateIndexSchemaInternal(
 absl::StatusOr<coordinator::IndexFingerprintVersion>
 SchemaManager::CreateIndexSchema(
     ValkeyModuleCtx *ctx, const data_model::IndexSchema &index_schema_proto) {
+  // AOF replay and replicated FT.CREATE skip instead of failing, like loads.
+  if (vmsdk::IsRealUserClient(ctx)) {
+    const auto max_index_name_len = options::GetMaxIndexNameLen().GetValue();
+    VMSDK_RETURN_IF_ERROR(vmsdk::VerifyRange(index_schema_proto.name().length(),
+                                             std::nullopt, max_index_name_len))
+        << "An index name can have a maximum length of " << max_index_name_len
+        << ".";
+  } else if (SkipOverlongIndexName(ctx, index_schema_proto.db_num(),
+                                   index_schema_proto.name())) {
+    return coordinator::IndexFingerprintVersion();
+  }
   const auto max_indexes = options::GetMaxIndexes().GetValue();
 
   VMSDK_RETURN_IF_ERROR(vmsdk::VerifyRange(
@@ -507,6 +555,13 @@ absl::Status SchemaManager::OnMetadataCallback(
     const coordinator::ObjName &obj_name, const google::protobuf::Any *metadata,
     uint64_t fingerprint, uint32_t version) {
   absl::MutexLock lock(&db_to_index_schemas_mutex_);
+  // The entry stays in the metadata, so this node keeps the cluster's
+  // fingerprint and does not reconcile it again on every broadcast.
+  if (metadata != nullptr &&
+      SkipOverlongIndexName(detached_ctx_.get(), obj_name.GetDbNum(),
+                            obj_name.GetName())) {
+    return absl::OkStatus();
+  }
   auto old_schema =
       RemoveIndexSchemaInternal(obj_name.GetDbNum(), obj_name.GetName());
   if (!old_schema.ok() && !absl::IsNotFound(old_schema.status())) {
@@ -688,7 +743,7 @@ void SchemaManager::FlushDBIndexSchemas(ValkeyModuleCtx *ctx, int db_num,
                               << flush_cmd << " of DB " << db_num;
       continue;
     }
-    if (coordinator_enabled_) {
+    if (coordinator_enabled_ && !SkipOverlongIndexName(ctx, db_num, name)) {
       // In coordinated mode - we recreate the indices, since they are a
       // cluster-level construct, not a node-level construct. To delete,
       // FT.DROPINDEX must be done explicitly.
@@ -848,6 +903,11 @@ absl::Status SchemaManager::LoadIndex(
   if (section->type() != data_model::RDB_SECTION_INDEX_SCHEMA) {
     return absl::InternalError(
         "Unexpected RDB section type passed to SchemaManager");
+  }
+
+  if (SkipOverlongIndexName(ctx, section->index_schema_contents().db_num(),
+                            section->index_schema_contents().name())) {
+    return SkipSupplementalContent(std::move(supplemental_iter));
   }
 
   // Load the index schema into memory
