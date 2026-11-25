@@ -35,13 +35,16 @@ class SafePortTracker(object):
     CLUSTER_BUS_PORT_OFFSET = 10000
     SEARCH_COORDINATOR_PORT_OFFSET = 20294
 
-    # Worker base ports: [10000, 19999] (stride = 100 ports per worker, up to 100 workers)
-    # Cluster bus ports: [20000, 29999]
-    # Coordinator ports: [30294, 40294]
-    # None of the three bands overlap with each other.
-    BASE_PORT = 10000
+    # Worker base ports: [2000, 11999] (stride = 100 ports per worker, up to 100 workers)
+    # Cluster bus ports: [12000, 21999]
+    # Coordinator ports: [22294, 32293]
+    # None of the three bands overlap with each other, and all stay below the
+    # kernel's ephemeral range: an outbound connection can otherwise take a
+    # coordinator port between allocation and the module binding it.
+    BASE_PORT = 2000
     PORTS_PER_WORKER = 100
     MAX_WORKERS = 100
+    DEFAULT_EPHEMERAL_PORT_FLOOR = 32768
 
     LOCKS_DIR = os.path.join(
         tempfile.gettempdir(),
@@ -82,6 +85,25 @@ class SafePortTracker(object):
         for port, fd in list(self.locked_fds.items()):
             self._unlock_fd(fd)
         self.locked_fds.clear()
+
+    @classmethod
+    def check_below_ephemeral_range(cls):
+        ephemeral_floor = cls.DEFAULT_EPHEMERAL_PORT_FLOOR
+        try:
+            with open("/proc/sys/net/ipv4/ip_local_port_range") as f:
+                ephemeral_floor = int(f.read().split()[0])
+        except OSError:
+            pass
+        highest_port = (
+            cls.BASE_PORT
+            + cls.MAX_WORKERS * cls.PORTS_PER_WORKER
+            - 1
+            + cls.SEARCH_COORDINATOR_PORT_OFFSET
+        )
+        assert highest_port < ephemeral_floor, (
+            f"Coordinator ports reach {highest_port}, inside the ephemeral range "
+            f"starting at {ephemeral_floor}; lower BASE_PORT or PORTS_PER_WORKER"
+        )
 
     @classmethod
     def _unlock_fd(cls, fd):
@@ -129,10 +151,14 @@ class SafePortTracker(object):
                 SafePortTracker._worker_port_offset + 1
             ) % self.PORTS_PER_WORKER
 
+            coordinator_port = candidate_port + self.SEARCH_COORDINATOR_PORT_OFFSET
+            # Mirrors GetCoordinatorPort in src/coordinator/util.h.
+            if candidate_port == 6378:
+                coordinator_port += 1
             ports_to_lock = [
                 candidate_port,
                 candidate_port + self.CLUSTER_BUS_PORT_OFFSET,
-                candidate_port + self.SEARCH_COORDINATOR_PORT_OFFSET,
+                coordinator_port,
             ]
 
             attempt_fds = {}
@@ -157,6 +183,8 @@ class SafePortTracker(object):
             f"[{self.worker_start_port}, {self.worker_end_port}) after {num_candidates} attempts"
         )
 
+
+SafePortTracker.check_below_ephemeral_range()
 
 # Monkey-patch valkeytestframework.conftest to use SafePortTracker
 try:
